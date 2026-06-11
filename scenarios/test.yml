@@ -1,0 +1,70 @@
+---
+commands:
+  - !ProgrammerEspIdf:
+    name: "ESP-IDF Programmer"
+    port: "COM5"
+    baudrate: 115200
+
+  - !Loop:
+    name: "Loop 5 times"
+    iterations: 5
+    commands:
+
+      - !SDCardMount:
+        name: "SD Card Mount"
+        sd_card_path: "D:/SDCard"
+        wait_after_s: 1
+
+      - !SdCardDeleteFiles:
+        name: "Delete files on SD Card"
+        sd_card_path: "D:/SDCard"
+        file_pattern: "*"
+
+      - !SDCardUnmount:
+        name: "SD Card Unmount"
+        sd_card_path: "D:/SDCard"
+        wait_after_s: 1
+
+      - !UsbSwitch:
+        name: "Control USB Switch Disabled"
+        state: false
+        wait_after_s: 10
+
+      - !UsbSwitch:
+        name: "Control USB Switch Enabled"
+        state: true
+        wait_after_s: 1
+
+      - !SDCardMount:
+        name: "SD Card Mount"
+        sd_card_path: "D:/SDCard"
+        wait_after_s: 1
+
+      - !SdCardFindFiles:
+        name: "Find files on SD Card"
+        sd_card_path: "D:/SDCard"
+        file_pattern: "*.bin"
+
+      - !SdCardFindFiles:
+        name: "Find files on SD Card"
+        sd_card_path: "D:/SDCard"
+        file_pattern: "*.bin"
+
+      - !SdCardFindFiles:
+        name: "Find files on SD Card"
+        sd_card_path: "D:/SDCard"
+        file_pattern: "*.bin"
+
+      - !SdCardFindFiles:
+        name: "Find files on SD Card"
+        sd_card_path: "D:/SDCard"
+        file_pattern: "*.bin"
+
+      - !SDCardUnmount:
+        name: "SD Card Unmount"
+        sd_card_path: "D:/SDCard"
+        wait_after_s: 1
+
+
+    
+
