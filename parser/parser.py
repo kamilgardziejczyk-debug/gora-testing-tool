@@ -10,6 +10,7 @@ from wrappers import (
     SdCardDeleteFilesWarpper,
     SdCardFindFilesWarpper,
     UsbSwitchWarpper,
+    Wrapper,
 )
 
 
@@ -40,21 +41,21 @@ class Parser:
             LOGGER.exception("YAML validation failed")
             return False
 
-    def parse(self) -> list[str]:
+    def parse(self) -> list[Wrapper]:
         document = yaml.compose(self.file_path.read_text(encoding="utf-8"))
         if document is None:
             return []
 
-        def run_wrapper_for_command(command_node: yaml.MappingNode) -> None:
+        def parse_wrapper_for_command(command_node: yaml.MappingNode) -> Wrapper | None:
             command_tag = command_node.tag.lstrip("!").rstrip(":")
             wrapper_class = WRAPPER_BY_TAG.get(command_tag)
             if wrapper_class is None:
-                return
+                return None
 
-            LOGGER.info("Executing wrapper for tag: %s", command_tag)
+            LOGGER.info("Parsing wrapper for tag: %s", command_tag)
             wrapper = wrapper_class(command_node)
             wrapper.parse()
-            wrapper.execute()
+            return wrapper
 
         def mapping_get(mapping_node: yaml.MappingNode, field_name: str) -> yaml.Node | None:
             for key_node, value_node in mapping_node.value:
@@ -102,38 +103,17 @@ class Parser:
 
             return expanded
 
-        tags: list[str] = []
-
-        def walk(node: yaml.Node) -> None:
-            if isinstance(node.tag, str) and node.tag.startswith("!"):
-                tags.append(node.tag.lstrip("!").rstrip(":"))
-
-            if isinstance(node, yaml.SequenceNode):
-                for item in node.value:
-                    walk(item)
-            elif isinstance(node, yaml.MappingNode):
-                for key, value in node.value:
-                    walk(key)
-                    walk(value)
+        wrappers: list[Wrapper] = []
 
         if isinstance(document, yaml.MappingNode):
             commands_node = mapping_get(document, "commands")
             if isinstance(commands_node, yaml.SequenceNode):
                 expanded_commands = expand_commands(commands_node)
-
                 for expanded_command in expanded_commands:
                     if not isinstance(expanded_command, yaml.MappingNode):
                         continue
-                    run_wrapper_for_command(expanded_command)
+                    wrapper = parse_wrapper_for_command(expanded_command)
+                    if wrapper is not None:
+                        wrappers.append(wrapper)
 
-                for expanded_command in expanded_commands:
-                    walk(expanded_command)
-            else:
-                walk(document)
-        else:
-            walk(document)
-
-        for tag in tags:
-            print(tag)
-
-        return tags
+        return wrappers
