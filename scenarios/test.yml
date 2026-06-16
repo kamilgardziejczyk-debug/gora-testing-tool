@@ -1,6 +1,6 @@
 ---
 commands:
-  - !ProgrammerEspIdf:
+  - !ProgramEsptool:
     name: "ESP-IDF Programmer"
     port: "COM5"
     baudrate: 115200
