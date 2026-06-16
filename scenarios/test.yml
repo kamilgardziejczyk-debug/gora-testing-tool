@@ -2,8 +2,9 @@
 commands:
   - !ProgramEsptool:
     name: "ESP-IDF Programmer"
-    port: "COM5"
-    baudrate: 115200
+    firmware: "tekpadz.bin"
+    bootloader: "bootloader.bin"
+    partition_table: "partition-table.bin"
 
   - !Loop:
     name: "Loop 5 times"
