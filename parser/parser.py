@@ -4,11 +4,9 @@ import logging
 import yaml
 
 from wrappers import (
+    ExecuteCommandWrapper,
+    GpioControlWrapper,
     ProgramEsptoolWarpper,
-    SDCardMountWarpper,
-    SDCardUnmountWarpper,
-    SdCardDeleteFilesWarpper,
-    SdCardFindFilesWarpper,
     UsbSwitchWarpper,
     Wrapper,
 )
@@ -19,11 +17,9 @@ LOGGER = logging.getLogger(__name__)
 WRAPPER_BY_TAG = {
     "ProgramEsptool": ProgramEsptoolWarpper,
     "ProgrammEsptool": ProgramEsptoolWarpper,
-    "SDCardMount": SDCardMountWarpper,
-    "SdCardDeleteFiles": SdCardDeleteFilesWarpper,
-    "SDCardUnmount": SDCardUnmountWarpper,
+    "ExecuteCommand": ExecuteCommandWrapper,
+    "GpioControl": GpioControlWrapper,
     "UsbSwitch": UsbSwitchWarpper,
-    "SdCardFindFiles": SdCardFindFilesWarpper,
 }
 
 
