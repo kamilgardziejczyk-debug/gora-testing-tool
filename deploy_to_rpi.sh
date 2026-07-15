@@ -70,6 +70,24 @@ if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3b. Check J-Link installation on the Pi
+# ---------------------------------------------------------------------------
+section "Checking SEGGER J-Link on Pi"
+
+if $SSH "command -v JLinkExe &>/dev/null"; then
+    info "JLinkExe (SEGGER J-Link): OK"
+else
+    warn "JLinkExe (SEGGER J-Link) is NOT installed on the Pi!"
+    echo -e "To flash devices using the !ProgramJlink tag on the Pi, you must install SEGGER J-Link:"
+    echo -e "  1. SSH into your Pi:  ssh ${RPI_USER}@${RPI_IP}"
+    echo -e "  2. Determine Pi architecture:  uname -m"
+    echo -e "  3. Download the correct .deb from https://www.segger.com/downloads/jlink/"
+    echo -e "     (e.g., J-Link Software and Documentation Pack for Linux, ARM 64-bit or 32-bit)"
+    echo -e "  4. Install it on the Pi:  sudo apt install ./JLink_Linux_V<version>_arm.deb"
+    echo -e "  (Skipping auto-installation since SEGGER requires accepting a license agreement)"
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Sync project files
 # ---------------------------------------------------------------------------
 section "Syncing project files to ${REMOTE_DIR}"
