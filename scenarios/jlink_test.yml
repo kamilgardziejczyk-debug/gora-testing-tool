@@ -5,5 +5,5 @@ commands:
     device: "RW612"
     interface: "SWD"
     speed: 4000
-    firmware: "gora-gateway-0.0.2.hex"
+    firmware: "zephyr.hex"
 
