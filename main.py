@@ -2,7 +2,7 @@ import argparse
 import logging
 
 from parser import Parser
-from wrappers import ProgramEsptoolWarpper, Wrapper
+from wrappers import ProgramEsptoolWarpper, ProgramJlinkWarpper, Wrapper
 
 
 LOGGER = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
         "--firmware",
         required=False,
         default=None,
-        help="Path to directory containing firmware binaries (bootloader, partition table, firmware). Overrides the directory for all ProgramEsptool commands.",
+        help="Path to directory containing firmware binaries (bootloader, partition table, firmware, hex, elf). Overrides the directory for all ProgramEsptool and ProgramJlink commands.",
     )
     return argument_parser.parse_args()
 
@@ -52,6 +52,10 @@ def apply_cli_overrides(wrappers: list[Wrapper], port: str | None, firmware: str
                 wrapper.port = port
             if firmware is not None:
                 LOGGER.info("Overriding firmware directory with CLI value: %s", firmware)
+                wrapper.firmware_dir = firmware
+        elif isinstance(wrapper, ProgramJlinkWarpper):
+            if firmware is not None:
+                LOGGER.info("Overriding J-Link firmware directory with CLI value: %s", firmware)
                 wrapper.firmware_dir = firmware
 
 

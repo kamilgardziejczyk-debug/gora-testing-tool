@@ -1,5 +1,6 @@
 from .wrapper import Wrapper
 from .program_esptool_warpper import ProgramEsptoolWarpper
+from .program_jlink_warpper import ProgramJlinkWarpper
 from .execute_command_wrapper import ExecuteCommandWrapper
 from .gpio_control_wrapper import GpioControlWrapper
 from .usb_switch_warpper import UsbSwitchWarpper

@@ -1,7 +1,11 @@
 import logging
 import time
 
-import RPi.GPIO as GPIO
+try:
+    import RPi.GPIO as GPIO
+except ImportError:
+    GPIO = None
+
 import yaml
 
 from .wrapper import Wrapper
@@ -51,6 +55,17 @@ class GpioControlWrapper(Wrapper):
         )
 
     def execute(self) -> None:
+        if GPIO is None:
+            LOGGER.warning(
+                "RPi.GPIO is not available on this platform. Simulating: GPIO pin %s set to %s",
+                self.pin,
+                "HIGH" if self.state else "LOW",
+            )
+            if self.wait_after_s is not None:
+                LOGGER.info("Waiting %s second(s) (simulated)", self.wait_after_s)
+                time.sleep(self.wait_after_s)
+            return
+
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(self.pin, GPIO.OUT)
 

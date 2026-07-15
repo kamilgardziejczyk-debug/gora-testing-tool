@@ -7,6 +7,7 @@ from wrappers import (
     ExecuteCommandWrapper,
     GpioControlWrapper,
     ProgramEsptoolWarpper,
+    ProgramJlinkWarpper,
     UsbSwitchWarpper,
     Wrapper,
 )
@@ -16,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 
 WRAPPER_BY_TAG = {
     "ProgramEsptool": ProgramEsptoolWarpper,
-    "ProgrammEsptool": ProgramEsptoolWarpper,
+    "ProgramJlink": ProgramJlinkWarpper,
     "ExecuteCommand": ExecuteCommandWrapper,
     "GpioControl": GpioControlWrapper,
     "UsbSwitch": UsbSwitchWarpper,

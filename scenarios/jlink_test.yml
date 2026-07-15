@@ -1,0 +1,9 @@
+---
+commands:
+  - !ProgramJlink:
+    name: "J-Link NXP RW612 HEX Flashing"
+    device: "RW612"
+    interface: "SWD"
+    speed: 4000
+    firmware: "gora-gateway-0.0.2.hex"
+
