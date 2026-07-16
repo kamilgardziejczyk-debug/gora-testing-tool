@@ -33,7 +33,7 @@ The tool is executed using `main.py`. You specify the path to a scenario YAML fi
 
 ### Command-Line Arguments
 *   `-t, --test` (Required): Path to the YAML test scenario file.
-*   `-p, --port` (Optional): Serial port for flashing (e.g. `/dev/ttyUSB0`). Overrides the port specified inside the YAML file for all `!ProgramEsptool` commands.
+*   `-p, --port` (Optional): Serial port for flashing (e.g. `/dev/ttyUSB0`). Overrides the port specified inside the YAML file for all `!ProgramEsptool` commands. Not applicable to `!SubghzSim`, which uses a different device/port and is always configured via its own `port` field in the YAML — see below.
 *   `-f, --firmware` (Optional): Path to the directory containing firmware binaries (such as `.bin`, `.hex`, or `.elf`). Overrides the directory for all `!ProgramEsptool` and `!ProgramJlink` commands.
 
 ### Execution Examples
@@ -90,6 +90,23 @@ Runs a host terminal command using shell execution.
 *   `name`: (Optional) Descriptive log name.
 *   `command`: (Required) The bash command string.
 *   `wait_after_s`: (Optional) Wait time in seconds after command execution.
+
+### `!SubghzSim`
+Drives the sub-GHz sensor simulator (`tools/subghz_sim`) as a scripted REPL session over a serial link: launches the simulator, feeds it a sequence of commands with waits in between, then quits it.
+*   `name`: (Optional) Descriptive log name.
+*   `port`: (Required) Serial port the simulator connects to. Set directly in the YAML — not overridable via `-p` / `--port`, since a scenario may also flash a device (e.g. `!ProgramEsptool`) on a different port at the same time.
+*   `baud`: (Optional) Baud rate. Defaults to `115200`.
+*   `interval`: (Optional) Heartbeat interval in seconds the simulator uses to re-send sensor state. Defaults to `5`.
+*   `actions`: (Optional) A list of REPL commands to run in order. Each entry has exactly one verb key (`add`, `set`, `del`, or `list`) plus an optional `wait_after_ms`:
+    ```yaml
+    actions:
+      - add: temp_hum          # add <heat|smoke|co|temp_hum>
+        wait_after_ms: 1000
+      - set: "1 temp 30 humidity 70"   # set <sensor_id> <field> <value> ...
+        wait_after_ms: 5000
+      - del: 1                 # del <sensor_id>
+        wait_after_ms: 1000
+    ```
 
 ### `!Loop`
 Runs nested scenario commands sequentially multiple times.

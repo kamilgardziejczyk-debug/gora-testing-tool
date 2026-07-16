@@ -8,6 +8,7 @@ from wrappers import (
     GpioControlWrapper,
     ProgramEsptoolWarpper,
     ProgramJlinkWarpper,
+    SubghzSimWrapper,
     UsbSwitchWarpper,
     Wrapper,
 )
@@ -21,6 +22,7 @@ WRAPPER_BY_TAG = {
     "ExecuteCommand": ExecuteCommandWrapper,
     "GpioControl": GpioControlWrapper,
     "UsbSwitch": UsbSwitchWarpper,
+    "SubghzSim": SubghzSimWrapper,
 }
 
 
