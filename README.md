@@ -92,11 +92,11 @@ Runs a host terminal command using shell execution.
 *   `wait_after_s`: (Optional) Wait time in seconds after command execution.
 
 ### `!SubghzSim`
-Drives the sub-GHz sensor simulator (`tools/subghz_sim`) as a scripted REPL session over a serial link: launches the simulator, feeds it a sequence of commands with waits in between, then quits it.
+Drives the sub-GHz sensor simulator (`tools/subghz_sim`) as a scripted REPL session over a serial link: launches the simulator, feeds it a sequence of commands with waits in between, keeps it active for `duration_s`, then quits it.
 *   `name`: (Optional) Descriptive log name.
 *   `port`: (Required) Serial port the simulator connects to. Set directly in the YAML — not overridable via `-p` / `--port`, since a scenario may also flash a device (e.g. `!ProgramEsptool`) on a different port at the same time.
 *   `baud`: (Optional) Baud rate. Defaults to `115200`.
-*   `interval`: (Optional) Heartbeat interval in seconds the simulator uses to re-send sensor state. Defaults to `5`.
+*   `duration_s`: (Optional) Total time in seconds to keep the simulator process active, measured from when it's launched. If the scripted `actions` finish before `duration_s` elapses, the simulator is kept running (still sending its own periodic heartbeat) for the remaining time before it's quit. Has no effect if the actions already take longer than `duration_s`.
 *   `actions`: (Optional) A list of REPL commands to run in order. Each entry has exactly one verb key (`add`, `set`, `del`, or `list`) plus an optional `wait_after_ms`:
     ```yaml
     actions:

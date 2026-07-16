@@ -12,7 +12,6 @@ from .wrapper import Wrapper
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BAUD = 115200
-DEFAULT_INTERVAL_S = 5.0
 PROCESS_EXIT_TIMEOUT_S = 5.0
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "tools" / "subghz_sim" / "subghz_sim.py"
@@ -23,8 +22,8 @@ ACTION_VERBS = {"add", "set", "del", "list"}
 class SubghzSimWrapper(Wrapper):
     """
     Wrapper that drives tools/subghz_sim as a scripted REPL session: launches
-    the simulator, feeds it a sequence of commands with waits in between, then
-    quits it.
+    the simulator, feeds it a sequence of commands with waits in between, keeps
+    it active for `duration_s`, then quits it.
     """
 
     def __init__(self, command_node: yaml.MappingNode):
@@ -32,7 +31,7 @@ class SubghzSimWrapper(Wrapper):
         self.name: str | None = None
         self.port: str | None = None
         self.baud: int = DEFAULT_BAUD
-        self.interval: float = DEFAULT_INTERVAL_S
+        self.duration_s: float | None = None
         self.actions: list[tuple[str, str, float | None]] = []
 
     def parse(self) -> None:
@@ -54,18 +53,18 @@ class SubghzSimWrapper(Wrapper):
                     self.port = value_node.value
                 elif key == "baud":
                     self.baud = int(value_node.value)
-                elif key == "interval":
-                    self.interval = float(value_node.value)
+                elif key == "duration_s":
+                    self.duration_s = float(value_node.value)
 
         if self.port is None:
             raise ValueError("SubghzSim: 'port' field is required")
 
         LOGGER.info(
-            "Parsed SubghzSim values: name=%s, port=%s, baud=%s, interval=%s, actions=%d",
+            "Parsed SubghzSim values: name=%s, port=%s, baud=%s, duration_s=%s, actions=%d",
             self.name,
             self.port,
             self.baud,
-            self.interval,
+            self.duration_s,
             len(self.actions),
         )
 
@@ -109,10 +108,10 @@ class SubghzSimWrapper(Wrapper):
             str(SCRIPT_PATH),
             "--port", self.port,
             "--baud", str(self.baud),
-            "--interval", str(self.interval),
         ]
 
         LOGGER.info("Starting subghz_sim on %s at %d baud", self.port, self.baud)
+        start_time = time.monotonic()
         process = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True, bufsize=1)
 
         try:
@@ -120,6 +119,12 @@ class SubghzSimWrapper(Wrapper):
                 self._send_line(process, f"{verb} {arg}".strip())
                 if wait_after_ms is not None:
                     time.sleep(wait_after_ms / 1000)
+
+            if self.duration_s is not None:
+                remaining_s = self.duration_s - (time.monotonic() - start_time)
+                if remaining_s > 0:
+                    LOGGER.info("Keeping subghz_sim active for %.1f more second(s)", remaining_s)
+                    time.sleep(remaining_s)
 
             self._send_line(process, "quit")
             process.wait(timeout=PROCESS_EXIT_TIMEOUT_S)

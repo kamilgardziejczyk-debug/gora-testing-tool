@@ -6,11 +6,12 @@ commands:
     interface: "SWD"
     speed: 4000
     firmware: "zephyr.hex"
+    wait_after_s: 35
 
   - !SubghzSim:
     port: "/dev/ttyUSB0"
     baud: 115200
-    interval: 5
+    duration_s: 60
     actions:
       - add: temp_hum
         wait_after_ms: 10
