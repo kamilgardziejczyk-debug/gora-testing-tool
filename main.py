@@ -1,5 +1,6 @@
 import argparse
 import logging
+import time
 
 from parser import Parser
 from wrappers import ProgramEsptoolWarpper, ProgramJlinkWarpper, Wrapper
@@ -62,6 +63,9 @@ def apply_cli_overrides(wrappers: list[Wrapper], port: str | None, firmware: str
 def run_scenario(wrappers: list[Wrapper]) -> None:
     for wrapper in wrappers:
         wrapper.execute()
+        if wrapper.wait_after_s is not None:
+            LOGGER.info("Waiting %s second(s) after %s", wrapper.wait_after_s, type(wrapper).__name__)
+            time.sleep(wrapper.wait_after_s)
     LOGGER.info("Scenario execution finished")
 
 

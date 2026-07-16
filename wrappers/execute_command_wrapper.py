@@ -1,6 +1,5 @@
 import logging
 import subprocess
-import time
 
 import yaml
 
@@ -15,7 +14,6 @@ class ExecuteCommandWrapper(Wrapper):
         self.command_node = command_node
         self.name: str | None = None
         self.command: str | None = None
-        self.wait_after_s: int | None = None
 
     def parse(self) -> None:
         tag_name = self.command_node.tag.lstrip("!").rstrip(":")
@@ -31,23 +29,12 @@ class ExecuteCommandWrapper(Wrapper):
                 self.name = value_node.value
             elif key == "command":
                 self.command = value_node.value
-            elif key == "wait_after_s":
-                self.wait_after_s = int(value_node.value)
 
         if not self.command:
             raise ValueError("ExecuteCommand: 'command' field is required")
 
-        LOGGER.info(
-            "Parsed ExecuteCommand: name=%s, command=%s, wait_after_s=%s",
-            self.name,
-            self.command,
-            self.wait_after_s,
-        )
+        LOGGER.info("Parsed ExecuteCommand: name=%s, command=%s", self.name, self.command)
 
     def execute(self) -> None:
         LOGGER.info("Executing command: %s", self.command)
         subprocess.run(self.command, shell=True, check=True)
-
-        if self.wait_after_s is not None:
-            LOGGER.info("Waiting %s second(s) after command", self.wait_after_s)
-            time.sleep(self.wait_after_s)

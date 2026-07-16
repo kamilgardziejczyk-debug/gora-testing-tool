@@ -45,6 +45,25 @@ class Parser:
         if document is None:
             return []
 
+        def mapping_get(mapping_node: yaml.MappingNode, field_name: str) -> yaml.Node | None:
+            for key_node, value_node in mapping_node.value:
+                if (
+                    isinstance(key_node, yaml.ScalarNode)
+                    and key_node.value == field_name
+                ):
+                    return value_node
+            return None
+
+        def parse_wait_after_s(command_node: yaml.MappingNode) -> float | None:
+            wait_node = mapping_get(command_node, "wait_after_s")
+            if wait_node is None or not isinstance(wait_node, yaml.ScalarNode):
+                return None
+            try:
+                return float(wait_node.value)
+            except (TypeError, ValueError):
+                LOGGER.warning("Ignoring invalid wait_after_s value: %s", wait_node.value)
+                return None
+
         def parse_wrapper_for_command(command_node: yaml.MappingNode) -> Wrapper | None:
             command_tag = command_node.tag.lstrip("!").rstrip(":")
             wrapper_class = WRAPPER_BY_TAG.get(command_tag)
@@ -54,16 +73,8 @@ class Parser:
             LOGGER.info("Parsing wrapper for tag: %s", command_tag)
             wrapper = wrapper_class(command_node)
             wrapper.parse()
+            wrapper.wait_after_s = parse_wait_after_s(command_node)
             return wrapper
-
-        def mapping_get(mapping_node: yaml.MappingNode, field_name: str) -> yaml.Node | None:
-            for key_node, value_node in mapping_node.value:
-                if (
-                    isinstance(key_node, yaml.ScalarNode)
-                    and key_node.value == field_name
-                ):
-                    return value_node
-            return None
 
         def parse_iterations(loop_body: yaml.MappingNode) -> int:
             iterations_node = mapping_get(loop_body, "iterations")

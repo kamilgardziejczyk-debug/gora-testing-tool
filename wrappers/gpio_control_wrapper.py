@@ -1,5 +1,4 @@
 import logging
-import time
 
 try:
     import RPi.GPIO as GPIO
@@ -20,7 +19,6 @@ class GpioControlWrapper(Wrapper):
         self.name: str | None = None
         self.pin: int | None = None
         self.state: bool | None = None
-        self.wait_after_s: int | None = None
 
     def parse(self) -> None:
         tag_name = self.command_node.tag.lstrip("!").rstrip(":")
@@ -38,21 +36,13 @@ class GpioControlWrapper(Wrapper):
                 self.pin = int(value_node.value)
             elif key == "state":
                 self.state = value_node.value.lower() == "true"
-            elif key == "wait_after_s":
-                self.wait_after_s = int(value_node.value)
 
         if self.pin is None:
             raise ValueError("GpioControl: 'pin' field is required")
         if self.state is None:
             raise ValueError("GpioControl: 'state' field is required")
 
-        LOGGER.info(
-            "Parsed GpioControl: name=%s, pin=%s, state=%s, wait_after_s=%s",
-            self.name,
-            self.pin,
-            self.state,
-            self.wait_after_s,
-        )
+        LOGGER.info("Parsed GpioControl: name=%s, pin=%s, state=%s", self.name, self.pin, self.state)
 
     def execute(self) -> None:
         if GPIO is None:
@@ -61,9 +51,6 @@ class GpioControlWrapper(Wrapper):
                 self.pin,
                 "HIGH" if self.state else "LOW",
             )
-            if self.wait_after_s is not None:
-                LOGGER.info("Waiting %s second(s) (simulated)", self.wait_after_s)
-                time.sleep(self.wait_after_s)
             return
 
         GPIO.setmode(GPIO.BCM)
@@ -72,7 +59,3 @@ class GpioControlWrapper(Wrapper):
         level = GPIO.HIGH if self.state else GPIO.LOW
         GPIO.output(self.pin, level)
         LOGGER.info("GPIO pin %s set to %s", self.pin, "HIGH" if self.state else "LOW")
-
-        if self.wait_after_s is not None:
-            LOGGER.info("Waiting %s second(s) after GPIO change", self.wait_after_s)
-            time.sleep(self.wait_after_s)

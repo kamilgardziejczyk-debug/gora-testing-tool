@@ -13,14 +13,13 @@ class UsbSwitchWarpper(Wrapper):
         self.command_node = command_node
         self.name: str | None = None
         self.state: bool | None = None
-        self.wait_after_s: int | None = None
 
     def parse(self) -> None:
         tag_name = self.command_node.tag.lstrip("!").rstrip(":")
         if tag_name != "UsbSwitch":
             raise ValueError("Expected !UsbSwitch command")
 
-        values: dict[str, str | bool | int] = {}
+        values: dict[str, str | bool] = {}
         for key_node, value_node in self.command_node.value:
             if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
                 continue
@@ -30,19 +29,11 @@ class UsbSwitchWarpper(Wrapper):
                 values[key] = value_node.value
             elif key == "state":
                 values[key] = value_node.value.lower() == "true"
-            elif key == "wait_after_s":
-                values[key] = int(value_node.value)
 
         self.name = str(values.get("name")) if values.get("name") is not None else None
         self.state = bool(values.get("state")) if values.get("state") is not None else None
-        self.wait_after_s = int(values.get("wait_after_s")) if values.get("wait_after_s") is not None else None
 
-        LOGGER.info(
-            "Parsed UsbSwitch values: name=%s, state=%s, wait_after_s=%s",
-            self.name,
-            self.state,
-            self.wait_after_s,
-        )
+        LOGGER.info("Parsed UsbSwitch values: name=%s, state=%s", self.name, self.state)
 
     def execute(self) -> None:
         LOGGER.info("UsbSwitch wrapper execute called")

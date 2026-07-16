@@ -7,7 +7,7 @@ commands:
     speed: 4000
     firmware: "zephyr.hex"
 
-- !SubghzSim:
+  - !SubghzSim:
     port: "/dev/ttyUSB0"
     baud: 115200
     interval: 5
