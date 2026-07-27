@@ -3,7 +3,7 @@ import logging
 import time
 
 from parser import Parser
-from wrappers import ProgramEsptoolWarpper, ProgramJlinkWarpper, Wrapper
+from wrappers import ProgramEsptoolWarpper, ProgramJlinkWarpper, Wrapper, mqtt_registry
 
 
 LOGGER = logging.getLogger(__name__)
@@ -61,12 +61,17 @@ def apply_cli_overrides(wrappers: list[Wrapper], port: str | None, firmware: str
 
 
 def run_scenario(wrappers: list[Wrapper]) -> None:
-    for wrapper in wrappers:
-        wrapper.execute()
-        if wrapper.wait_after_s is not None:
-            LOGGER.info("Waiting %s second(s) after %s", wrapper.wait_after_s, type(wrapper).__name__)
-            time.sleep(wrapper.wait_after_s)
-    LOGGER.info("Scenario execution finished")
+    try:
+        for wrapper in wrappers:
+            wrapper.execute()
+            if wrapper.wait_after_s is not None:
+                LOGGER.info("Waiting %s second(s) after %s", wrapper.wait_after_s, type(wrapper).__name__)
+                time.sleep(wrapper.wait_after_s)
+        LOGGER.info("Scenario execution finished")
+    finally:
+        # A command that raises part-way through must still leave the broker
+        # connections closed, or the client id stays taken by an orphan.
+        mqtt_registry.close_all()
 
 
 def main() -> None:

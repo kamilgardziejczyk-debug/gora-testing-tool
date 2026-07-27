@@ -1,6 +1,6 @@
 # Gora Testing Tool
 
-An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, toggle GPIOs (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
+An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, toggle GPIOs (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, listen to messages published to AWS IoT Core, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
 
 ---
 
@@ -107,6 +107,29 @@ Drives the sub-GHz sensor simulator (`tools/subghz_sim`) as a scripted REPL sess
       - del: 1                 # del <sensor_id>
         wait_after_ms: 1000
     ```
+
+### `!MqttSubscribe`
+Opens a connection to an MQTT broker (built for AWS IoT Core) over mutual TLS and starts buffering messages from a topic. Wraps `tools/mqtt_listener` — see [its README](tools/mqtt_listener/README.md) for the standalone tool, certificate setup, and troubleshooting.
+
+Non-blocking: it returns as soon as the broker confirms the subscription, then buffers in the background. Place it **before** the command that makes the device publish, so a gateway that forwards a message within milliseconds cannot publish before anything is listening.
+*   `name`: (Optional) Descriptive log name.
+*   `session`: (Required) Name to register this session under, referenced by `!MqttDisconnect`.
+*   `endpoint`: (Required) Broker hostname (e.g. `xxxx-ats.iot.us-east-1.amazonaws.com`).
+*   `client_id`: (Required) MQTT client id. Must be permitted by the IoT policy, and must differ from the device's own id — a broker allows one connection per client id, so a collision makes the listener and the device evict each other in a loop.
+*   `cert`: (Required) Device certificate (PEM). Relative paths resolve against the scenario file's directory.
+*   `private_key`: (Required) Private key (PEM).
+*   `root_ca`: (Required) Root CA certificate (PEM), e.g. `AmazonRootCA1.pem`.
+*   `topic`: (Required) Topic filter to subscribe to; `+` and `#` wildcards allowed.
+*   `port`: (Optional) Broker port. Defaults to `8883`.
+*   `qos`: (Optional) `0` or `1`. Defaults to `1`. IoT Core does not support QoS 2.
+*   `connect_timeout_s`: (Optional) Seconds to wait for the broker's connection acknowledgement. Defaults to `10`.
+
+> Note: no tag reads the buffered messages yet, so a scenario can currently subscribe and buffer but not assert on what arrived. See `scenarios/mqtt_test.yml`.
+
+### `!MqttDisconnect`
+Closes a session opened by `!MqttSubscribe`. Optional — the runner closes any session still open when the scenario ends, including after a failure. Use it to free a client id partway through a scenario, for example so the device can reconnect with it.
+*   `name`: (Optional) Descriptive log name.
+*   `session`: (Required) Session name given to `!MqttSubscribe`. An unknown name logs a warning rather than failing the scenario.
 
 ### `!Loop`
 Runs nested scenario commands sequentially multiple times.

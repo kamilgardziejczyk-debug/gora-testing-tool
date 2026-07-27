@@ -2,9 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+User-facing documentation lives elsewhere: `README.md` for the scenario tag reference, `tools/*/README.md` for individual tools. Keep it there, not here.
+
 ## What this tool does
 
-`gora-testing-tool` is a CLI tool that runs hardware test scenarios defined in YAML files. It orchestrates actions against embedded hardware (ESP32 flashing via esptool, SD card operations, USB switch control) by parsing a scenario file and executing commands sequentially.
+`gora-testing-tool` is a CLI tool that runs hardware test scenarios defined in YAML files. It orchestrates actions against embedded hardware (ESP32/J-Link flashing, Raspberry Pi GPIO, sub-GHz sensor simulation, listening to AWS IoT Core) by parsing a scenario file and executing commands sequentially.
 
 ## Running the tool
 
@@ -20,38 +22,35 @@ There are no automated tests or a linter configured yet.
 The flow is: `main.py` → `Parser` → list of `Wrapper` instances → sequential `execute()` calls.
 
 **`parser/parser.py` — `Parser` class**
-Reads and validates YAML using `yaml.compose()` (low-level node API, not `yaml.safe_load`). Resolves `!Loop` blocks by expanding them inline before constructing wrappers. Unknown tags are silently skipped. The `WRAPPER_BY_TAG` dict maps YAML tag strings to wrapper classes; add new commands here.
+Reads and validates YAML using `yaml.compose()` (low-level node API, not `yaml.safe_load`). Resolves `!Loop` blocks by expanding them inline before constructing wrappers. The `WRAPPER_BY_TAG` dict maps YAML tag strings to wrapper classes; add new commands here.
+
+Unknown tags are silently skipped. A tag written without its leading `!` therefore parses as a plain mapping and is dropped without warning — this is why the `!Loop` in `scenarios/test.yml` currently runs zero commands.
 
 **`wrappers/` — one file per command type**
-Each wrapper implements the `Wrapper` ABC (`parse()` + `execute()`). `parse()` extracts fields from the raw `yaml.MappingNode` passed by the parser. `execute()` performs the actual hardware action. Currently only `ProgramEsptoolWarpper` has a real `execute()` implementation; the SD card and USB switch wrappers log a stub message.
+Each wrapper implements the `Wrapper` ABC (`parse()` + `execute()`). `parse()` extracts fields from the raw `yaml.MappingNode`; prefer failing there over in `execute()`, so a bad scenario is rejected before any hardware is touched. Every wrapper has a real `execute()` except `UsbSwitchWarpper`, which logs a stub message.
 
-**YAML scenario format** (`scenarios/test.yml` for reference)
-```yaml
-commands:
-  - !ProgramEsptool:
-    port: "COM5"
-    baudrate: 115200
-    firmware: "path/to/firmware.bin"
-    flash_address: "0x0"      # optional, default 0x0
+Two `Wrapper` base-class fields are generic across all tags and filled in by the Parser, so wrappers must not parse them themselves:
+- `wait_after_s` — the runner sleeps for it after `execute()` returns.
+- `scenario_dir` — directory of the scenario file, set before `parse()`. Resolve relative paths against it.
 
-  - !Loop:
-    iterations: 5
-    commands:
-      - !SDCardMount:
-        sd_card_path: "D:/SDCard"
-        wait_after_s: 1
-      - !UsbSwitch:
-        state: true
-        wait_after_s: 10
-```
+`ProgramEsptoolWarpper.parse()` accepts a `ProgrammEsptool` spelling, but that tag is absent from `WRAPPER_BY_TAG`, so it is unreachable. Don't document it as a working alias.
 
-Supported tags: `ProgramEsptool` (also `ProgrammEsptool` as legacy alias), `SDCardMount`, `SDCardUnmount`, `SdCardDeleteFiles`, `SdCardFindFiles`, `UsbSwitch`.
+**`tools/` — standalone hardware tools, each with its own `requirements.txt`**
+Two different integration styles, deliberately:
+- `tools/subghz_sim/` — flat script directory, no `__init__.py`, driven as a subprocess via stdin by its wrapper.
+- `tools/mqtt_listener/` — importable package whose API the MQTT wrappers call directly. This makes `paho-mqtt` a hard dependency of `main.py`, unlike `pyserial`.
+
+**MQTT sessions**
+`!MqttSubscribe` opens a listener and buffers messages; a later command reads it. The two rendezvous through `wrappers/mqtt_registry.py` (see Code standards). `run_scenario()` closes any open session in a `finally`, so a failing command cannot leave an orphan holding the client id.
+
+Nothing reads the buffered messages yet — the comparison step is unimplemented and intended to live in the wrapper layer, not in `tools/mqtt_listener/`.
 
 ## Adding a new command
 
-1. Create `wrappers/my_command_warpper.py` implementing `Wrapper`.
+1. Create `wrappers/my_command_wrapper.py` implementing `Wrapper`.
 2. Export it from `wrappers/__init__.py`.
 3. Add its tag → class mapping in `parser/parser.py::WRAPPER_BY_TAG`.
+4. Document the tag and its fields in `README.md`.
 
 ## Code standards (from GEMINI.md)
 
@@ -59,3 +58,5 @@ Supported tags: `ProgramEsptool` (also `ProgrammEsptool` as legacy alias), `SDCa
 - PEP 8; functions ≤ 50 lines.
 - Docstrings on all public functions and classes.
 - No global state; use class attributes or parameters.
+
+One deliberate exception: `wrappers/mqtt_registry.py` keeps a module-level dict of live MQTT listeners. `!MqttSubscribe` must start buffering before the command that triggers a publish, while a later command reads that same listener, and the Parser builds every wrapper independently with no way to pass a reference between them. Don't "fix" it without solving that rendezvous another way.
