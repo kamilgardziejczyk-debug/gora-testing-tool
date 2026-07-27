@@ -111,3 +111,15 @@ active_env/
 # Project specific temporary and firmware files
 *.jlink
 tmp/
+
+# Certificates and private keys (e.g. IoT Core device certs for mqtt_listener).
+# Never commit these. The extension patterns are a safety net in case a key is
+# saved outside a certs/ directory. To commit a genuinely public file such as
+# AmazonRootCA1.pem, override with: git add -f <path>
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
