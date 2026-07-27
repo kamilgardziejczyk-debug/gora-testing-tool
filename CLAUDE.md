@@ -36,9 +36,13 @@ Two `Wrapper` base-class fields are generic across all tags and filled in by the
 `ProgramEsptoolWarpper.parse()` accepts a `ProgrammEsptool` spelling, but that tag is absent from `WRAPPER_BY_TAG`, so it is unreachable. Don't document it as a working alias.
 
 **`tools/` — standalone hardware tools, each with its own `requirements.txt`**
-Two different integration styles, deliberately:
-- `tools/subghz_sim/` — flat script directory, no `__init__.py`, driven as a subprocess via stdin by its wrapper.
-- `tools/mqtt_listener/` — importable package whose API the MQTT wrappers call directly. This makes `paho-mqtt` a hard dependency of `main.py`, unlike `pyserial`.
+Both are importable packages whose API the wrappers call directly, and both keep a thin `cli.py` + `<tool>.py` entry point so they stay runnable standalone. `paho-mqtt` and `pyserial` are therefore hard dependencies of `main.py`, not just of the tools.
+
+Each tool owns all of its domain validation, so the wrapper and the CLI reject the same input for the same reason:
+- `tools/subghz_sim/` — `SubghzSimulator` owns the serial link, sensor registry and heartbeat; `sensors.apply_fields()` validates every `<field> <value>` pair before mutating anything. `cli.py` only tokenizes REPL lines.
+- `tools/mqtt_listener/` — `MqttListener` connects and buffers; deciding whether a message is the expected one is the wrapper's job, not the tool's.
+
+The tool packages must not import from `wrappers/` or know about YAML — the dependency runs one way, so both tools stay usable on their own.
 
 **MQTT sessions**
 `!MqttSubscribe` opens a listener and buffers messages; a later command reads it. The two rendezvous through `wrappers/mqtt_registry.py` (see Code standards). `run_scenario()` closes any open session in a `finally`, so a failing command cannot leave an orphan holding the client id.

@@ -7,8 +7,8 @@ from typing import Callable, Optional
 
 import serial
 
-from registry import Registry
-from sensors import Sensor
+from .registry import Registry
+from .sensors import Sensor
 
 
 class Reporter:

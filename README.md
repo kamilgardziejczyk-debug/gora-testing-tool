@@ -92,12 +92,13 @@ Runs a host terminal command using shell execution.
 *   `wait_after_s`: (Optional) Wait time in seconds after command execution.
 
 ### `!SubghzSim`
-Drives the sub-GHz sensor simulator (`tools/subghz_sim`) as a scripted REPL session over a serial link: launches the simulator, feeds it a sequence of commands with waits in between, keeps it active for `duration_s`, then quits it.
+Runs a scripted sub-GHz simulator session over a serial link: opens the port, applies a sequence of sensor actions with waits in between, keeps the simulator reporting for `duration_s`, then closes the link. Wraps `tools/subghz_sim` — see [its README](tools/subghz_sim/README.md) for the standalone REPL, the wire format, and the Python API.
 *   `name`: (Optional) Descriptive log name.
 *   `port`: (Required) Serial port the simulator connects to. Set directly in the YAML — not overridable via `-p` / `--port`, since a scenario may also flash a device (e.g. `!ProgramEsptool`) on a different port at the same time.
 *   `baud`: (Optional) Baud rate. Defaults to `115200`.
-*   `duration_s`: (Optional) Total time in seconds to keep the simulator process active, measured from when it's launched. If the scripted `actions` finish before `duration_s` elapses, the simulator is kept running (still sending its own periodic heartbeat) for the remaining time before it's quit. Has no effect if the actions already take longer than `duration_s`.
-*   `actions`: (Optional) A list of REPL commands to run in order. Each entry has exactly one verb key (`add`, `set`, `del`, or `list`) plus an optional `wait_after_ms`:
+*   `interval_s`: (Optional) Heartbeat interval in seconds — how often every live sensor's current state is re-sent. Defaults to `5`.
+*   `duration_s`: (Optional) Total time in seconds to keep the simulator active, measured from when the port is opened. If the scripted `actions` finish before `duration_s` elapses, the simulator keeps running (still sending its periodic heartbeat) for the remaining time before it's closed. Has no effect if the actions already take longer than `duration_s`.
+*   `actions`: (Optional) A list of simulator commands to run in order. Each entry has exactly one verb key (`add`, `set`, `del`, or `list`) plus an optional `wait_after_ms`:
     ```yaml
     actions:
       - add: temp_hum          # add <heat|smoke|co|temp_hum>
@@ -107,6 +108,9 @@ Drives the sub-GHz sensor simulator (`tools/subghz_sim`) as a scripted REPL sess
       - del: 1                 # del <sensor_id>
         wait_after_ms: 1000
     ```
+    Sensor ids are assigned per command, starting at `1` in the order the `add` actions run — so the first `add` above is `#1`. Each `!SubghzSim` command starts with an empty sensor list; ids from an earlier command are gone.
+
+    A bad action **fails the scenario** rather than being skipped: an unknown sensor type, a non-numeric id or a malformed `set` is rejected while parsing the file, before any hardware is touched, and an unknown sensor id or a field the sensor's type does not have fails when the action runs.
 
 ### `!MqttSubscribe`
 Opens a connection to an MQTT broker (built for AWS IoT Core) over mutual TLS and starts buffering messages from a topic. Wraps `tools/mqtt_listener` — see [its README](tools/mqtt_listener/README.md) for the standalone tool, certificate setup, and troubleshooting.

@@ -2,7 +2,10 @@ import logging
 
 try:
     import RPi.GPIO as GPIO
-except ImportError:
+except (ImportError, RuntimeError):
+    # ImportError: RPi.GPIO not installed. RuntimeError: installed, but this is
+    # not a Raspberry Pi - the module raises on import off-device. Either way we
+    # fall back to logging the pin change instead of performing it.
     GPIO = None
 
 import yaml

@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Dict, List
 
-from sensors import SENSOR_TYPES, Sensor
+from .sensors import SENSOR_TYPES, Sensor
 
 
 class UnknownSensorType(ValueError):
