@@ -72,6 +72,7 @@ class Parser:
 
             LOGGER.info("Parsing wrapper for tag: %s", command_tag)
             wrapper = wrapper_class(command_node)
+            wrapper.scenario_dir = self.file_path.parent
             wrapper.parse()
             wrapper.wait_after_s = parse_wait_after_s(command_node)
             return wrapper
