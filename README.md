@@ -128,7 +128,18 @@ Non-blocking: it returns as soon as the broker confirms the subscription, then b
 *   `qos`: (Optional) `0` or `1`. Defaults to `1`. IoT Core does not support QoS 2.
 *   `connect_timeout_s`: (Optional) Seconds to wait for the broker's connection acknowledgement. Defaults to `10`.
 
-> Note: no tag reads the buffered messages yet, so a scenario can currently subscribe and buffer but not assert on what arrived. See `scenarios/mqtt_test.yml`.
+### `!MqttExpect`
+Asserts a message-count expression against a `!MqttSubscribe` session, e.g. `validation: "count == 2"`. Place it **after** the command that triggers the device, so the assertion covers what that action actually produced.
+
+MQTT delivery has no "no more messages coming" signal, so this generally waits out the full `timeout_s` window rather than stopping as soon as the count looks right — a straggler arriving just after would otherwise go unnoticed. The exception is when the running count already makes the final verdict certain before the window ends (e.g. `count == 2` can no longer pass once a 3rd message has arrived, and `count >= 2` can no longer fail once the 2nd has); in that case it stops waiting immediately instead of running out the clock.
+
+Does not close the session, so a scenario can `!MqttExpect` more than once against the same session — for example, once after each of two triggered actions.
+*   `name`: (Optional) Descriptive log name.
+*   `session`: (Required) Session name given to `!MqttSubscribe`.
+*   `validation`: (Required) A `"count <op> <n>"` expression, where `<op>` is one of `==`, `!=`, `>=`, `<=`, `>`, `<` and `<n>` is a non-negative integer. Examples: `"count == 2"`, `"count >= 1"`, `"count < 5"`.
+*   `timeout_s`: (Optional) Seconds to wait for messages to arrive. Defaults to `10`.
+
+A failed assertion **fails the scenario**, logging every message seen on the session so far (topic and payload) to make it debuggable without touching the broker directly.
 
 ### `!MqttDisconnect`
 Closes a session opened by `!MqttSubscribe`. Optional — the runner closes any session still open when the scenario ends, including after a failure. Use it to free a client id partway through a scenario, for example so the device can reconnect with it.

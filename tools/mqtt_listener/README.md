@@ -127,6 +127,10 @@ UTF-8 with `errors="replace"`.
 
 ### Semantics worth knowing
 
+- **Every message is logged at INFO the moment it arrives** (`MQTT <client_id> <- <topic>  <payload>`),
+  independent of whether or when anything calls `stream()`. This is what lets you watch traffic live
+  in the scenario log while a long-running step (e.g. a device simulator) is still going, rather than
+  only seeing it in a batch once something reads the session.
 - **`stream()` consumes.** Each message is yielded once. Two concurrent
   readers on one listener will each see part of the traffic, not all of it.
 - **`recent()` does not consume** — it is a separate 100-message ring kept for

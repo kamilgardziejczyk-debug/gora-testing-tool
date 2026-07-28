@@ -192,6 +192,7 @@ class MqttListener:
 
     def _on_message(self, client, userdata, message) -> None:
         entry = Message(message.topic, message.payload.decode("utf-8", errors="replace"))
+        LOGGER.info("MQTT %s <- %s  %s", self.client_id, entry.topic, entry.payload)
         self._history.append(entry)
         try:
             self._messages.put_nowait(entry)

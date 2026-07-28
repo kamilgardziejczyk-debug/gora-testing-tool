@@ -7,6 +7,7 @@ from wrappers import (
     ExecuteCommandWrapper,
     GpioControlWrapper,
     MqttDisconnectWrapper,
+    MqttExpectWrapper,
     MqttSubscribeWrapper,
     ProgramEsptoolWarpper,
     ProgramJlinkWarpper,
@@ -27,6 +28,7 @@ WRAPPER_BY_TAG = {
     "SubghzSim": SubghzSimWrapper,
     "MqttSubscribe": MqttSubscribeWrapper,
     "MqttDisconnect": MqttDisconnectWrapper,
+    "MqttExpect": MqttExpectWrapper,
 }
 
 
