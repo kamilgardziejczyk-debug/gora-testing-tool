@@ -6,6 +6,7 @@ import yaml
 from wrappers import (
     ExecuteCommandWrapper,
     GpioControlWrapper,
+    MqttDisconnectWrapper,
     MqttExpectWrapper,
     MqttSubscribeWrapper,
     ProgramEsptoolWarpper,
@@ -27,6 +28,7 @@ WRAPPER_BY_TAG = {
     "SubghzSim": SubghzSimWrapper,
     "MqttSubscribe": MqttSubscribeWrapper,
     "MqttExpect": MqttExpectWrapper,
+    "MqttDisconnect": MqttDisconnectWrapper,
 }
 
 

@@ -111,9 +111,10 @@ active_env/
 # Project specific temporary and firmware files
 *.jlink
 tmp/
+firmware/
 
-# Generated HTML test reports
-results/
+# Generated HTML test reports (any output directory, e.g. results/, reports/)
+*.html
 
 # Certificates and private keys (e.g. IoT Core device certs for mqtt_listener).
 # Never commit these. The extension patterns are a safety net in case a key is

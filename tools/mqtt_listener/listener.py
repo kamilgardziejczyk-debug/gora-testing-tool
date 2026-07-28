@@ -139,6 +139,21 @@ class MqttListener:
         """Every message seen on this session, newest last, for diagnostics."""
         return list(self._history)
 
+    def requeue(self, message: Message) -> None:
+        """Put a message back for a later reader.
+
+        For a consumer that only wants messages matching one topic filter out
+        of several subscribed on this session: it still has to pop everything
+        via `stream()` to see what's arrived, but anything that isn't its own
+        needs to go back so a later reader (e.g. another topic's check) still
+        sees it. Not re-added to the `recent()` history, since it was already
+        recorded there when first received.
+        """
+        try:
+            self._messages.put_nowait(message)
+        except queue.Full:
+            self._dropped += 1
+
     def close(self) -> None:
         """Close the connection and stop the network thread. Idempotent."""
         if self._closed:

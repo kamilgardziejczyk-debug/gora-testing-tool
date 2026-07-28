@@ -2,6 +2,7 @@ import logging
 import operator as operator_module
 
 import yaml
+from paho.mqtt.client import topic_matches_sub
 
 from . import mqtt_registry
 from .wrapper import Wrapper
@@ -39,8 +40,15 @@ EARLY_DECISION = {
 
 
 class MqttExpectWrapper(Wrapper):
-    """Asserts a `validation` expression against the message count on an
-    !MqttSubscribe session, e.g. `validation: "count == 2"`.
+    """Asserts a `validation` expression against the message count on one
+    `topic` filter within an !MqttSubscribe session, e.g. `validation: "count == 2"`.
+
+    A session can carry several topics (see !MqttSubscribe), so this only
+    counts messages whose topic matches `topic` - a plain topic or one with
+    `+`/`#` wildcards, matched the same way a broker matches a subscription
+    filter against a concrete topic. Anything read off the session that
+    doesn't match is put back afterwards, so a later !MqttExpect on a
+    different topic still sees it.
 
     MQTT delivery has no "no more messages coming" signal, so this waits out
     the full `timeout_s` window rather than stopping as soon as the count
@@ -58,6 +66,7 @@ class MqttExpectWrapper(Wrapper):
         self.command_node = command_node
         self.name: str | None = None
         self.session: str | None = None
+        self.topic: str | None = None
         self.operator: str | None = None
         self.expected_count: int | None = None
         self.timeout_s: float = DEFAULT_TIMEOUT_S
@@ -77,6 +86,8 @@ class MqttExpectWrapper(Wrapper):
                 self.name = value_node.value
             elif key == "session":
                 self.session = value_node.value
+            elif key == "topic":
+                self.topic = value_node.value
             elif key == "validation":
                 validation = value_node.value
             elif key == "timeout_s":
@@ -88,9 +99,10 @@ class MqttExpectWrapper(Wrapper):
         self._validate()
 
         LOGGER.info(
-            "Parsed MqttExpect: name=%s, session=%s, validation='count %s %s', timeout_s=%s",
+            "Parsed MqttExpect: name=%s, session=%s, topic=%s, validation='count %s %s', timeout_s=%s",
             self.name,
             self.session,
+            self.topic,
             self.operator,
             self.expected_count,
             self.timeout_s,
@@ -127,6 +139,8 @@ class MqttExpectWrapper(Wrapper):
         """Fail at parse time on anything we can check without a broker."""
         if self.session is None:
             raise ValueError("MqttExpect: 'session' field is required")
+        if self.topic is None:
+            raise ValueError("MqttExpect: 'topic' field is required")
         if self.operator is None:
             raise ValueError("MqttExpect: 'validation' field is required")
         if self.expected_count < 0:
@@ -138,57 +152,70 @@ class MqttExpectWrapper(Wrapper):
         listener = mqtt_registry.get(self.session)
         early_verdict, crossed = EARLY_DECISION[self.operator]
 
-        received = []
+        matched = []
+        unmatched = []
         passed = None
         for message in listener.stream(duration_s=self.timeout_s):
-            received.append(message)
-            if crossed(len(received), self.expected_count):
-                passed = early_verdict
-                break
+            if topic_matches_sub(self.topic, message.topic):
+                matched.append(message)
+                if crossed(len(matched), self.expected_count):
+                    passed = early_verdict
+                    break
+            else:
+                unmatched.append(message)
+
+        # Only requeued once this check is done reading - putting them back
+        # while still draining the same stream() call would just hand them
+        # straight back to this same loop, spinning for the rest of timeout_s.
+        for message in unmatched:
+            listener.requeue(message)
 
         if passed is None:
-            passed = COMPARISONS[self.operator](len(received), self.expected_count)
+            passed = COMPARISONS[self.operator](len(matched), self.expected_count)
 
         # Set regardless of the verdict, so the HTML report can show both
         # sides of the assertion whether it passed or failed.
         self.validation_expected = f"count {self.operator} {self.expected_count}"
-        self.validation_actual = f"count={len(received)}"
+        self.validation_actual = f"count={len(matched)}"
 
         if not passed:
-            raise ValueError(self._failure_message(listener, received))
+            raise ValueError(self._failure_message(listener, matched))
 
         LOGGER.info(
-            "MqttExpect: session '%s' satisfied 'count %s %s' (got %d)",
+            "MqttExpect: session '%s' topic '%s' satisfied 'count %s %s' (got %d)",
             self.session,
+            self.topic,
             self.operator,
             self.expected_count,
-            len(received),
+            len(matched),
         )
 
-    def _failure_message(self, listener, received: list) -> str:
+    def _failure_message(self, listener, matched: list) -> str:
         """Explain a failed assertion without conflating two different counts.
 
-        `received` is only what this check counted before the verdict became
-        certain - a `==`/`<=`/`<` check stops as soon as it's overshot, so this
-        can be far smaller than everything the session has actually buffered
-        (e.g. a session left open through a long heartbeat window). Showing
-        only `received` would look right but hide where the extra messages
-        came from; showing only `listener.recent()` would contradict the count
-        in the headline. So both are printed, each labeled with what it is.
+        `matched` is only messages on `self.topic`, and only what this check
+        counted before the verdict became certain - a `==`/`<=`/`<` check
+        stops as soon as it's overshot, so this can be far smaller than
+        everything the session has actually buffered (e.g. other topics on
+        the same session, or a long heartbeat window). Showing only `matched`
+        would look right but hide where the discrepancy came from; showing
+        only `listener.recent()` (every topic, uncounted) would contradict the
+        count in the headline. So both are printed, each labeled with what it is.
         """
-        counted = "\n".join(f"  {m.topic}  {m.payload}" for m in received) or "  (none)"
+        counted = "\n".join(f"  {m.topic}  {m.payload}" for m in matched) or "  (none)"
         history = listener.recent()
         message = (
-            f"MqttExpect: session '{self.session}' failed 'count {self.operator} {self.expected_count}': "
-            f"counted {len(received)} message(s) before the result was already decided "
-            f"(budget was {self.timeout_s}s).\n"
+            f"MqttExpect: session '{self.session}' topic '{self.topic}' failed "
+            f"'count {self.operator} {self.expected_count}': counted {len(matched)} message(s) "
+            f"before the result was already decided (budget was {self.timeout_s}s).\n"
             f"Messages counted for this check:\n{counted}"
         )
-        if len(history) != len(received):
+        if len(history) != len(matched):
             recent = "\n".join(f"  {m.topic}  {m.payload}" for m in history) or "  (none)"
             message += (
                 f"\n\nFor context: this session has buffered {len(history)} message(s) in total "
-                f"since !MqttSubscribe started listening (up to the last 100), which can include "
-                f"ones from before this check started or after it stopped counting:\n{recent}"
+                f"(any topic, up to the last 100), which can include ones on other topics carried "
+                f"by the same session, or ones from before this check started or after it stopped "
+                f"counting:\n{recent}"
             )
         return message

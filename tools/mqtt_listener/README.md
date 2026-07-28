@@ -117,9 +117,10 @@ with MqttListener(...) as listener:
 | Method | Behaviour |
 | --- | --- |
 | `connect(timeout_s=10.0)` | TLS connect, block for CONNACK. Raises `ConnectionError` |
-| `subscribe(topic, qos=1)` | Subscribe, block for SUBACK. Raises `ConnectionError` |
+| `subscribe(topic, qos=1)` | Subscribe, block for SUBACK. Raises `ConnectionError`. Call again with another topic to add it to the same connection |
 | `stream(duration_s=None)` | Generator of `Message`; runs forever if `duration_s` is `None` |
-| `recent()` | Last 100 messages seen, newest last — for diagnostics |
+| `recent()` | Last 100 messages seen (any topic), newest last — for diagnostics |
+| `requeue(message)` | Put a consumed `Message` back for a later `stream()` call to see |
 | `close()` | Disconnect and stop the network thread. Idempotent |
 
 **`Message`** — a `NamedTuple` of `topic` and `payload`, payload decoded as
@@ -132,7 +133,12 @@ UTF-8 with `errors="replace"`.
   in the scenario log while a long-running step (e.g. a device simulator) is still going, rather than
   only seeing it in a batch once something reads the session.
 - **`stream()` consumes.** Each message is yielded once. Two concurrent
-  readers on one listener will each see part of the traffic, not all of it.
+  readers on one listener will each see part of the traffic, not all of it —
+  `requeue()` a message a reader doesn't want so a different one still can.
+- **One connection can subscribe to several topics** — call `subscribe()` more
+  than once. `stream()`/`recent()` don't distinguish which topic a message
+  came from; that's on the caller (e.g. matching `message.topic` against a
+  filter) if a mixed-topic session needs it.
 - **`recent()` does not consume** — it is a separate 100-message ring kept for
   diagnostics, independent of what `stream()` has taken.
 - **The pending buffer holds 1000 messages.** Past that, new messages are

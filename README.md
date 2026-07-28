@@ -123,33 +123,41 @@ Runs a scripted sub-GHz simulator session over a serial link: opens the port, ap
     A bad action **fails the scenario** rather than being skipped: an unknown sensor type, a non-numeric id or a malformed `set` is rejected while parsing the file, before any hardware is touched, and an unknown sensor id or a field the sensor's type does not have fails when the action runs.
 
 ### `!MqttSubscribe`
-Opens a connection to an MQTT broker (built for AWS IoT Core) over mutual TLS and starts buffering messages from a topic. Wraps `tools/mqtt_listener` — see [its README](tools/mqtt_listener/README.md) for the standalone tool, certificate setup, and troubleshooting.
+Opens a connection to an MQTT broker (built for AWS IoT Core) over mutual TLS and starts buffering messages from one or more topics. Wraps `tools/mqtt_listener` — see [its README](tools/mqtt_listener/README.md) for the standalone tool, certificate setup, and troubleshooting.
 
-Non-blocking: it returns as soon as the broker confirms the subscription, then buffers in the background. Place it **before** the command that makes the device publish, so a gateway that forwards a message within milliseconds cannot publish before anything is listening.
+Non-blocking: it returns as soon as the broker confirms every subscription, then buffers in the background. Place it **before** the command that makes the device publish, so a gateway that forwards a message within milliseconds cannot publish before anything is listening.
 *   `name`: (Optional) Descriptive log name.
-*   `session`: (Required) Name to register this session under, referenced by `!MqttExpect`.
+*   `session`: (Required) Name to register this session under, referenced by `!MqttExpect` and `!MqttDisconnect`.
 *   `endpoint`: (Required) Broker hostname (e.g. `xxxx-ats.iot.us-east-1.amazonaws.com`).
-*   `client_id`: (Required) MQTT client id. Must be permitted by the IoT policy, and must differ from the device's own id — a broker allows one connection per client id, so a collision makes the listener and the device evict each other in a loop.
+*   `client_id`: (Required) MQTT client id. Must be permitted by the IoT policy, and must differ from the device's own id — a broker allows one connection per client id, so a collision makes the listener and the device evict each other in a loop. Since a broker allows only one connection per client id, subscribing to more than one topic that shares a client id belongs in a **single** `!MqttSubscribe`'s `topics` list, not two separate `!MqttSubscribe` commands.
 *   `cert`: (Required) Device certificate (PEM). Relative paths resolve against the scenario file's directory.
 *   `private_key`: (Required) Private key (PEM).
 *   `root_ca`: (Required) Root CA certificate (PEM), e.g. `AmazonRootCA1.pem`.
-*   `topic`: (Required) Topic filter to subscribe to; `+` and `#` wildcards allowed.
+*   `topics`: (Required) A list of topic filters to subscribe to; `+` and `#` wildcards allowed. Example: `topics: ["gora/gateway-01/subghz/#", "$aws/things/gateway-01/shadow/update"]`.
 *   `port`: (Optional) Broker port. Defaults to `8883`.
-*   `qos`: (Optional) `0` or `1`. Defaults to `1`. IoT Core does not support QoS 2.
+*   `qos`: (Optional) `0` or `1`, applied to every topic in `topics`. Defaults to `1`. IoT Core does not support QoS 2.
 *   `connect_timeout_s`: (Optional) Seconds to wait for the broker's connection acknowledgement. Defaults to `10`.
 
 ### `!MqttExpect`
-Asserts a message-count expression against a `!MqttSubscribe` session, e.g. `validation: "count == 2"`. Place it **after** the command that triggers the device, so the assertion covers what that action actually produced.
+Asserts a message-count expression against one `topic` filter within a `!MqttSubscribe` session, e.g. `validation: "count == 2"`. Place it **after** the command that triggers the device, so the assertion covers what that action actually produced.
+
+Since a session can carry more than one topic, this only counts messages whose topic matches `topic` — matched the same way a broker matches a subscription filter against a concrete topic, so `topic` can itself use `+`/`#` wildcards. Anything read off the session that doesn't match is put back for a later command to see, so a second `!MqttExpect` on a different topic within the same session still sees its own traffic.
 
 MQTT delivery has no "no more messages coming" signal, so this generally waits out the full `timeout_s` window rather than stopping as soon as the count looks right — a straggler arriving just after would otherwise go unnoticed. The exception is when the running count already makes the final verdict certain before the window ends (e.g. `count == 2` can no longer pass once a 3rd message has arrived, and `count >= 2` can no longer fail once the 2nd has); in that case it stops waiting immediately instead of running out the clock.
 
-Does not close the session, so a scenario can `!MqttExpect` more than once against the same session — for example, once after each of two triggered actions. The runner closes any session still open once the scenario ends, including after a failure.
+Does not close the session, so a scenario can `!MqttExpect` more than once against the same session — for example, once per topic. The runner closes any session still open once the scenario ends, including after a failure.
 *   `name`: (Optional) Descriptive log name.
 *   `session`: (Required) Session name given to `!MqttSubscribe`.
+*   `topic`: (Required) Which topic filter (out of the session's `topics`) to count messages on.
 *   `validation`: (Required) A `"count <op> <n>"` expression, where `<op>` is one of `==`, `!=`, `>=`, `<=`, `>`, `<` and `<n>` is a non-negative integer. Examples: `"count == 2"`, `"count >= 1"`, `"count < 5"`.
 *   `timeout_s`: (Optional) Seconds to wait for messages to arrive. Defaults to `10`.
 
-A failed assertion **fails the scenario**, logging every message seen on the session so far (topic and payload) to make it debuggable without touching the broker directly.
+A failed assertion **fails the scenario**, logging every message counted for this check, plus (if it differs) everything else buffered on the session across every topic, to make it debuggable without touching the broker directly.
+
+### `!MqttDisconnect`
+Closes a session opened by `!MqttSubscribe`. Optional — the runner closes any session still open when the scenario ends, including after a failure. Use it to free a client id partway through a scenario, for example so the device can reconnect with it.
+*   `name`: (Optional) Descriptive log name.
+*   `session`: (Required) Session name given to `!MqttSubscribe`. An unknown name logs a warning rather than failing the scenario.
 
 ### `!Loop`
 Runs nested scenario commands sequentially multiple times.
