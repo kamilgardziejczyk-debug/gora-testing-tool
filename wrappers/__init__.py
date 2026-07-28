@@ -5,6 +5,7 @@ from .execute_command_wrapper import ExecuteCommandWrapper
 from .gpio_control_wrapper import GpioControlWrapper
 from .usb_switch_warpper import UsbSwitchWarpper
 from .subghz_sim_wrapper import SubghzSimWrapper
+from .ble_central_wrapper import BleCentralWrapper
 from .mqtt_subscribe_wrapper import MqttSubscribeWrapper
 from .mqtt_expect_wrapper import MqttExpectWrapper
 from .mqtt_disconnect_wrapper import MqttDisconnectWrapper

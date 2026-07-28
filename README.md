@@ -1,6 +1,6 @@
 # Gora Testing Tool
 
-An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, toggle GPIOs (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, listen to messages published to AWS IoT Core, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
+An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, toggle GPIOs (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
 
 ---
 
@@ -121,6 +121,42 @@ Runs a scripted sub-GHz simulator session over a serial link: opens the port, ap
     Sensor ids are assigned per command, starting at `1` in the order the `add` actions run — so the first `add` above is `#1`. Each `!SubghzSim` command starts with an empty sensor list; ids from an earlier command are gone.
 
     A bad action **fails the scenario** rather than being skipped: an unknown sensor type, a non-numeric id or a malformed `set` is rejected while parsing the file, before any hardware is touched, and an unknown sensor id or a field the sensor's type does not have fails when the action runs.
+
+### `!BleCentral`
+Acts as a Bluetooth LE central: connects to a peripheral by advertised name (or address) and writes a sequence of GATT characteristics, then disconnects. Wraps `tools/ble_gatt` — see [its README](tools/ble_gatt/README.md) for the standalone REPL, UUID/value notation, and troubleshooting.
+
+Self-contained like `!SubghzSim`: the connection lives for this command only, so nothing is left holding the adapter (and blocking the device from advertising) afterwards.
+*   `name`: (Optional) Descriptive log name.
+*   `device`: (Required) The peripheral's advertised name (e.g. `GoraGateway_01B4EE`), or its Bluetooth address (`AA:BB:CC:DD:EE:FF`). A name is resolved by scanning; an address connects directly, skipping the scan.
+*   `service`: (Optional) Default service UUID for every characteristic below. Each entry can override it with its own `service`.
+*   `characteristics`: (Required) A non-empty list of characteristics to write, in order. Each entry takes:
+    *   `uuid`: (Required) Characteristic UUID — 16-bit shorthand (`2a00`) or full 128-bit.
+    *   `value`: (Required) The value to write, interpreted per `encoding`.
+    *   `encoding`: (Optional) `hex` (default), `utf8`, `uint8`, `uint16`, or `uint32`. Integers are little-endian, matching the Bluetooth spec's own numeric fields.
+    *   `service`: (Optional) Service UUID for just this characteristic, overriding the command-level `service`.
+    *   `response`: (Optional) `true` (default) waits for the device to acknowledge the write, so a rejection fails the test; `false` is fire-and-forget.
+    *   `wait_after_ms`: (Optional) Pause after this write before the next one.
+*   `adapter`: (Optional) Bluetooth adapter to use, e.g. `hci0`. Defaults to the system default.
+*   `scan_timeout_s`: (Optional) Seconds to scan when resolving `device` by name. Defaults to `8`.
+*   `connect_timeout_s`: (Optional) Seconds to wait for the connection itself. Defaults to `15`.
+
+```yaml
+  - !BleCentral:
+    name: "Provision the gateway over BLE"
+    device: "GoraGateway_01B4EE"
+    service: "0000ffe0-0000-1000-8000-00805f9b34fb"
+    characteristics:
+      - uuid: "0000ffe1-0000-1000-8000-00805f9b34fb"
+        value: "MyWifiSSID"
+        encoding: utf8
+        wait_after_ms: 200
+      - uuid: "0000ffe2-0000-1000-8000-00805f9b34fb"
+        value: "01"
+```
+
+A bad UUID, an unknown encoding or a value that doesn't fit it **fails while parsing the file**, before the radio is touched — so a malformed scenario cannot leave a device half-configured. A missing device, a service or characteristic the peripheral doesn't expose, or a rejected write fails when the command runs.
+
+> Note: only the central role exists. A peripheral role (this host advertising its own GATT server) is not implemented yet.
 
 ### `!MqttSubscribe`
 Opens a connection to an MQTT broker (built for AWS IoT Core) over mutual TLS and starts buffering messages from one or more topics. Wraps `tools/mqtt_listener` — see [its README](tools/mqtt_listener/README.md) for the standalone tool, certificate setup, and troubleshooting.

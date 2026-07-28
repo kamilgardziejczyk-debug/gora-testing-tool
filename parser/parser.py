@@ -4,6 +4,7 @@ import logging
 import yaml
 
 from wrappers import (
+    BleCentralWrapper,
     ExecuteCommandWrapper,
     GpioControlWrapper,
     MqttDisconnectWrapper,
@@ -26,6 +27,7 @@ WRAPPER_BY_TAG = {
     "GpioControl": GpioControlWrapper,
     "UsbSwitch": UsbSwitchWarpper,
     "SubghzSim": SubghzSimWrapper,
+    "BleCentral": BleCentralWrapper,
     "MqttSubscribe": MqttSubscribeWrapper,
     "MqttExpect": MqttExpectWrapper,
     "MqttDisconnect": MqttDisconnectWrapper,

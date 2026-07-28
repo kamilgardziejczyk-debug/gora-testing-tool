@@ -4,3 +4,4 @@ pyyaml
 paho-mqtt>=2.0
 pyserial
 jinja2
+bleak>=3.0
