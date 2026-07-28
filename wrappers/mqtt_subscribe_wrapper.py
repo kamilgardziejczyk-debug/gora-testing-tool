@@ -20,8 +20,8 @@ class MqttSubscribeWrapper(Wrapper):
 
     Non-blocking: it returns as soon as the broker confirms the subscription, so
     place it *before* the command that triggers a publish. The session stays open
-    under its `session` name until a !MqttDisconnect closes it, or the runner
-    tears it down at the end of the scenario.
+    under its `session` name, for !MqttExpect (or any later command) to read from,
+    until the runner tears it down at the end of the scenario.
     """
 
     def __init__(self, command_node: yaml.MappingNode):

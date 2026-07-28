@@ -23,8 +23,8 @@ def register(name: str, listener: MqttListener) -> None:
     """Store a connected listener under `name` for later commands to read."""
     if name in _SESSIONS:
         raise ValueError(
-            f"MQTT: session '{name}' is already open. Give this subscription a "
-            f"different session name, or close the first with !MqttDisconnect."
+            f"MQTT: session '{name}' is already open. Give this subscription a different "
+            f"session name - the runner closes every open session once the scenario ends."
         )
     _SESSIONS[name] = listener
     LOGGER.info("Opened MQTT session '%s'", name)

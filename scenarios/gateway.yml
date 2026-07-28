@@ -9,8 +9,9 @@
 # Certificate paths are relative to THIS file's directory.
 #
 # !MqttExpect asserts on what arrived after the two sensors are added: it
-# comes after !SubghzSim so the count reflects that action's uplinks, and
-# before !MqttDisconnect so the session is still open to read.
+# comes after !SubghzSim so the count reflects that action's uplinks. No
+# !MqttDisconnect needed - the runner closes any still-open session once
+# the scenario ends, which here is right after !MqttExpect's timeout_s.
 
 commands:
   # Uncomment for a full end-to-end run from a freshly flashed gateway.
@@ -48,7 +49,3 @@ commands:
     session: "iot"
     validation: "count == 12"
     timeout_s: 10
-
-  - !MqttDisconnect:
-    name: "Close the listener"
-    session: "iot"

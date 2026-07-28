@@ -49,8 +49,9 @@ class MqttExpectWrapper(Wrapper):
     certain (see EARLY_DECISION) - waiting out the rest of the window then
     would only slow the scenario down for nothing.
 
-    Does not close the session; use !MqttDisconnect for that, so a scenario
-    can !MqttExpect more than once against the same session.
+    Does not close the session, so a scenario can !MqttExpect more than once
+    against the same session - it stays open until the runner tears it down
+    at the end of the scenario.
     """
 
     def __init__(self, command_node: yaml.MappingNode):
