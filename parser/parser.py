@@ -47,7 +47,8 @@ class Parser:
             return False
 
     def parse(self) -> list[Wrapper]:
-        document = yaml.compose(self.file_path.read_text(encoding="utf-8"))
+        document_text = self.file_path.read_text(encoding="utf-8")
+        document = yaml.compose(document_text)
         if document is None:
             return []
 
@@ -79,6 +80,8 @@ class Parser:
             LOGGER.info("Parsing wrapper for tag: %s", command_tag)
             wrapper = wrapper_class(command_node)
             wrapper.scenario_dir = self.file_path.parent
+            wrapper.tag = command_tag
+            wrapper.raw_yaml = document_text[command_node.start_mark.index:command_node.end_mark.index].strip()
             wrapper.parse()
             wrapper.wait_after_s = parse_wait_after_s(command_node)
             return wrapper

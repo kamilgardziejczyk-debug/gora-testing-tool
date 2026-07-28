@@ -148,6 +148,11 @@ class MqttExpectWrapper(Wrapper):
         if passed is None:
             passed = COMPARISONS[self.operator](len(received), self.expected_count)
 
+        # Set regardless of the verdict, so the HTML report can show both
+        # sides of the assertion whether it passed or failed.
+        self.validation_expected = f"count {self.operator} {self.expected_count}"
+        self.validation_actual = f"count={len(received)}"
+
         if not passed:
             raise ValueError(self._failure_message(listener, received))
 

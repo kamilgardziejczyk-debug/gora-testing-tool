@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scenario report - {{ scenario_name }}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 2rem;
+    color: #1a1a1a;
+    background: #fff;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  .meta { color: #666; margin-bottom: 1.5rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+  th { background: #f5f5f5; }
+  tr:nth-child(even) { background: #fafafa; }
+  .pass { color: #1a7f37; font-weight: 600; }
+  .fail { color: #cf222e; font-weight: 600; }
+  pre { margin: 0; white-space: pre-wrap; font-size: 0.85em; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .duration { text-align: right; white-space: nowrap; }
+  .error { color: #cf222e; }
+  summary { cursor: pointer; }
+  .summary { margin-top: 1.5rem; font-size: 1.05rem; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #eee; background: #121212; }
+    table, th, td { border-color: #444; }
+    th { background: #1e1e1e; }
+    tr:nth-child(even) { background: #1a1a1a; }
+    .meta { color: #999; }
+    .pass { color: #3fb950; }
+    .fail { color: #f85149; }
+    .error { color: #f85149; }
+  }
+</style>
+</head>
+<body>
+  <h1>Scenario report: {{ scenario_name }}</h1>
+  <div class="meta">Executed at {{ started_at }}</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Test name</th>
+        <th>Tag</th>
+        <th>Validation</th>
+        <th class="duration">Time (s)</th>
+        <th>Result</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for result in results %}
+      <tr>
+        <td>{{ result.name }}</td>
+        <td>
+          <details>
+            <summary><code>!{{ result.tag }}</code></summary>
+            <pre><code>{{ result.raw_yaml }}</code></pre>
+          </details>
+        </td>
+        <td>
+          {% if result.validation_expected is not none %}
+            Expected: <code>{{ result.validation_expected }}</code><br>
+            Received: <code>{{ result.validation_actual }}</code>
+          {% else %}
+            &ndash;
+          {% endif %}
+        </td>
+        <td class="duration">{{ "%.2f"|format(result.duration_s) }}</td>
+        <td>
+          {% if result.passed %}
+            <span class="pass">PASS</span>
+          {% else %}
+            <span class="fail">FAIL</span>
+            {% if result.error %}<br><small class="error">{{ result.error }}</small>{% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="summary">
+    <strong>Total execution time: {{ total_duration_s }}s</strong>
+    &nbsp;&mdash;&nbsp; {{ passed_count }} passed, {{ failed_count }} failed
+  </div>
+</body>
+</html>

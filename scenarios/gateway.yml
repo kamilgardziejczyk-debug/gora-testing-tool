@@ -15,7 +15,7 @@
 commands:
   # Uncomment for a full end-to-end run from a freshly flashed gateway.
   # - !ProgramJlink:
-  #   name: "J-Link NXP RW612 HEX Flashing"
+  #   name: "J-Link NXP RW612 Flashing"
   #   device: "RW612"
   #   interface: "SWD"
   #   speed: 4000
@@ -33,7 +33,7 @@ commands:
     topic: "gora/gateway-01/subghz/#"
 
   - !SubghzSim:
-    name: "Add two sensors so the gateway forwards their uplinks"
+    name: "Add simulated sensors"
     port: "/dev/ttyUSB0"
     baud: 115200
     duration_s: 30
@@ -44,7 +44,7 @@ commands:
         wait_after_ms: 10
 
   - !MqttExpect:
-    name: "Expect one uplink per added sensor"
+    name: "Collect Mqtt Messages"
     session: "iot"
     validation: "count == 12"
     timeout_s: 10

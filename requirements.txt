@@ -3,3 +3,4 @@ RPi.GPIO
 pyyaml
 paho-mqtt>=2.0
 pyserial
+jinja2
