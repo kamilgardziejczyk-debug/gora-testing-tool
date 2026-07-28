@@ -1,0 +1,54 @@
+---
+# Listens for the messages a gateway forwards to AWS IoT Core.
+#
+# Note the ordering: !MqttSubscribe comes BEFORE the command that makes the
+# device publish. It returns as soon as the broker confirms the subscription and
+# then buffers in the background, so a gateway that forwards an uplink within
+# milliseconds cannot publish before anything is listening.
+#
+# Certificate paths are relative to THIS file's directory.
+#
+# !MqttExpect asserts on what arrived after the two sensors are added: it
+# comes after !SubghzSim so the count reflects that action's uplinks, and
+# before !MqttDisconnect so the session is still open to read.
+
+commands:
+  # Uncomment for a full end-to-end run from a freshly flashed gateway.
+  # - !ProgramJlink:
+  #   name: "J-Link NXP RW612 HEX Flashing"
+  #   device: "RW612"
+  #   interface: "SWD"
+  #   speed: 4000
+  #   firmware: "zephyr.hex"
+  #   wait_after_s: 35
+
+  - !MqttSubscribe:
+    name: "Listen for SubGHz uplinks"
+    session: "iot"
+    endpoint: "a2onrynswccrx9-ats.iot.us-east-1.amazonaws.com"
+    client_id: "gateway-01-test-listener"
+    cert: "../tools/mqtt_listener/certs/device-cert.pem"
+    private_key: "../tools/mqtt_listener/certs/device-key.pem"
+    root_ca: "../tools/mqtt_listener/certs/root-ca.pem"
+    topic: "gora/gateway-01/subghz/#"
+
+  - !SubghzSim:
+    name: "Add two sensors so the gateway forwards their uplinks"
+    port: "/dev/ttyUSB0"
+    baud: 115200
+    duration_s: 30
+    actions:
+      - add: temp_hum
+        wait_after_ms: 10
+      - add: co
+        wait_after_ms: 10
+
+  - !MqttExpect:
+    name: "Expect one uplink per added sensor"
+    session: "iot"
+    validation: "count == 12"
+    timeout_s: 10
+
+  - !MqttDisconnect:
+    name: "Close the listener"
+    session: "iot"
