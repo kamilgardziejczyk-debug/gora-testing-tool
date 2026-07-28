@@ -103,6 +103,21 @@ for service in central.services():
 central.write_characteristic("ffe1", encode_value("01ff", "hex"), service_uuid="ffe0")
 data = central.read_characteristic("2a29")
 
+for value in central.stream_notifications("ffe3", service_uuid="ffe0", duration_s=30):
+    if value == b"\x01":               # deciding what counts is the caller's job
+        break
+else:
+    raise TimeoutError("device never reported online")
+
+# poll_characteristic() is the alternative for a notification that's easy to
+# miss (e.g. right after reconnecting): reads on an interval instead of
+# subscribing, trading responsiveness for not depending on notify delivery.
+for value in central.poll_characteristic("ffe3", service_uuid="ffe0", interval_s=2.0, duration_s=30):
+    if value == b"\x01":
+        break
+else:
+    raise TimeoutError("device never reported online")
+
 central.close()
 ```
 
@@ -127,6 +142,8 @@ with BleCentral() as central:
 | `services()` | `ServiceInfo` list, each with its `CharacteristicInfo` entries |
 | `read_characteristic(char_uuid, service_uuid=None)` | Returns `bytes` |
 | `write_characteristic(char_uuid, data, service_uuid=None, response=True)` | Write; raises `IOError` on failure |
+| `stream_notifications(char_uuid, service_uuid=None, duration_s=None)` | Generator of `bytes`, one per notification; runs forever if `duration_s` is `None` |
+| `poll_characteristic(char_uuid, service_uuid=None, interval_s=1.0, duration_s=None)` | Generator of `bytes`, one per read, taken every `interval_s`; runs forever if `duration_s` is `None` |
 | `is_connected` / `device` | Current connection state, and what is connected |
 
 Errors: `DeviceNotFound` (a `ConnectionError`, so every "could not reach it"
@@ -154,6 +171,19 @@ failure can be caught alike, as with the MQTT and sub-GHz tools),
 - **Writes are acknowledged by default** (`response=True`), so a device-side
   rejection surfaces as an error instead of a silently-dropped write. Pass
   `response=False` for a fire-and-forget write-without-response.
+- **A device reset drops the connection.** `stream_notifications()` only sees
+  notifications on the current connection, so waiting for one that arrives
+  *after* a reset (a device coming back online, say) needs a fresh `connect()`
+  once it re-advertises, not a longer `duration_s` on the same session.
+- **`stream_notifications()` only receives and yields** - like
+  `MqttListener.stream()`, deciding whether a value is the one being waited
+  for is the caller's job, not this tool's. Same for `poll_characteristic()`.
+- **Prefer `poll_characteristic()` over `stream_notifications()` for a value
+  that changes in a narrow window right after connecting** - subscribing to a
+  notification and the peripheral deciding to send one aren't atomic, so a
+  fast device can change the value before `start_notify()` is even in place.
+  Reading on an interval instead can't miss it that way, at the cost of
+  noticing a change up to `interval_s` late rather than immediately.
 - **The event loop is a background thread.** bleak is async-only and a
   `BleakClient` is bound to the loop that created it, so one long-lived loop
   runs per `BleCentral`, which is what lets a connection survive across

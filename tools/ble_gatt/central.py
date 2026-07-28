@@ -9,10 +9,12 @@ beside this one and can reuse `loop`, `uuids` and `values` unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
@@ -24,6 +26,12 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_SCAN_TIMEOUT_S = 8.0
 DEFAULT_CONNECT_TIMEOUT_S = 15.0
+
+# The wait for each notification is sliced into polls this long rather than
+# awaited in one block for the full remaining budget, so the overall deadline
+# in `stream_notifications()` gets re-checked regularly instead of only after
+# a single notification finally arrives (or never does).
+NOTIFY_POLL_INTERVAL_S = 0.5
 
 # A Bluetooth address, e.g. "AA:BB:CC:DD:EE:FF". Used to tell an address apart
 # from a device name so `connect()` can take either without a second field.
@@ -48,6 +56,17 @@ class CharacteristicNotFound(ValueError):
 
 class AmbiguousCharacteristic(ValueError):
     """The characteristic UUID appears in more than one service; `service` is needed."""
+
+
+class _PollTimeout(Exception):
+    """Internal: one notification poll slice elapsed with nothing queued.
+
+    Deliberately not `TimeoutError`: from Python 3.11 on, `asyncio.TimeoutError`,
+    `concurrent.futures.TimeoutError` and the builtin are all the same class, so
+    `AsyncLoop.run()` raising `TimeoutError` for "this operation itself is
+    stuck" would be indistinguishable from a normal, expected "no notification
+    in this slice, poll again" if this used that type too.
+    """
 
 
 @dataclass(frozen=True)
@@ -267,6 +286,98 @@ class BleCentral:
             )
         except (BleakError, TimeoutError, OSError) as error:
             raise IOError(f"write to characteristic {characteristic.uuid} failed ({error})") from error
+
+    def stream_notifications(
+        self,
+        char_uuid: str,
+        service_uuid: Optional[str] = None,
+        duration_s: Optional[float] = None,
+    ) -> Iterator[bytes]:
+        """Subscribe to a characteristic and yield each notified value as bytes.
+
+        Stops after `duration_s` (waits indefinitely if None). Deciding whether
+        a value is the one being waited for is the caller's job, same as
+        `MqttListener.stream()` - this only receives and yields.
+
+        A generator: breaking out of the loop early (once the caller has seen
+        what it wanted) unsubscribes via the `finally` below as soon as the
+        generator is closed, rather than only once `duration_s` elapses.
+        """
+        client = self._require_connection()
+        characteristic = self._find_characteristic(char_uuid, service_uuid)
+        queue: asyncio.Queue = self._loop.run(self._start_notify(client, characteristic), self.connect_timeout_s)
+
+        deadline = time.monotonic() + duration_s if duration_s is not None else float("inf")
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                try:
+                    data = self._loop.run(self._get_one(queue, min(remaining, NOTIFY_POLL_INTERVAL_S)))
+                except _PollTimeout:
+                    continue
+                yield data
+        finally:
+            self._loop.run(client.stop_notify(characteristic), self.connect_timeout_s)
+
+    async def _start_notify(self, client: BleakClient, characteristic) -> asyncio.Queue:
+        """Subscribe and return a queue that fills as notifications arrive.
+
+        The callback runs on this central's own background loop (the same
+        thread `queue.get()` is awaited from in `stream_notifications()`), so
+        a plain `asyncio.Queue` needs no extra thread-safety wrapping.
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _on_notify(_sender, data: bytearray) -> None:
+            queue.put_nowait(bytes(data))
+
+        await client.start_notify(characteristic, _on_notify)
+        return queue
+
+    async def _get_one(self, queue: asyncio.Queue, timeout_s: float) -> bytes:
+        """One poll slice: wait up to `timeout_s` for the next queued value.
+
+        Raises `_PollTimeout`, not `TimeoutError` - see that class for why.
+        """
+        try:
+            return await asyncio.wait_for(queue.get(), timeout_s)
+        except TimeoutError:
+            raise _PollTimeout() from None
+
+    def poll_characteristic(
+        self,
+        char_uuid: str,
+        service_uuid: Optional[str] = None,
+        interval_s: float = 1.0,
+        duration_s: Optional[float] = None,
+    ) -> Iterator[bytes]:
+        """Read a characteristic repeatedly, yielding each value read.
+
+        An alternative to `stream_notifications()` for a peripheral whose
+        notifications are unreliable to catch - e.g. a value that changes in
+        a narrow window right after reconnecting, before a notify subscription
+        is reliably in place. Polling trades responsiveness (a change is seen
+        up to `interval_s` late) for not depending on notify delivery at all.
+
+        Stops after `duration_s` (waits indefinitely if None). A transient
+        read failure is logged and retried rather than raised, since one is
+        expected occasionally right after a reconnect; a read failing because
+        nothing is connected at all raises `RuntimeError` immediately, same as
+        `read_characteristic()`, rather than retrying for the whole budget.
+        """
+        deadline = time.monotonic() + duration_s if duration_s is not None else float("inf")
+        while True:
+            try:
+                yield self.read_characteristic(char_uuid, service_uuid)
+            except (BleakError, TimeoutError, OSError) as error:
+                LOGGER.warning("Poll read of %s failed, will retry: %s", char_uuid, error)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(interval_s, remaining))
 
     async def _discover(self, timeout_s: float) -> List[DiscoveredDevice]:
         """Scan and flatten bleak's results into DiscoveredDevice records."""

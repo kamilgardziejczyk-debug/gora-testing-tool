@@ -8,6 +8,15 @@
 #
 # Certificate paths are relative to THIS file's directory.
 #
+# The first !BleCentral writes credentials and triggers a reset; the BLE link
+# does not survive that, so a second, independent !BleCentral reconnects and
+# waits for "online" before anything MQTT-related starts. scan_timeout_s is
+# raised on that second command since the device needs time to reboot and
+# start advertising again before a scan will find it. It reads the online
+# characteristic (attempts: 15, every 2s) instead of subscribing to a
+# notification for it - a real push notify is easy to miss in the narrow
+# window right after reconnecting.
+#
 # One !MqttSubscribe covers both topics on a single connection: the broker
 # allows only one connection per client_id, so two separate subscriptions
 # both using "gateway-01-test-listener" would evict each other. !MqttExpect's
@@ -19,15 +28,48 @@
 
 commands:
   - !ProgramJlink:
-    name: "J-Link NXP RW612 Flashing"
+    name: "Flash The Device"
     device: "RW612"
     interface: "SWD"
     speed: 4000
     firmware: "zephyr.hex"
-    wait_after_s: 15
+    wait_after_s: 35
+
+  - !BleCentral:
+    name: "Set Wifi Credentials And Reset"
+    device: "GoraGateway_01B4EE"
+    service: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f10"
+    actions:
+      - write:
+          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f11"
+          value: "dziewiatka"
+          encoding: utf8
+      - write:
+          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f12"
+          value: ""
+          encoding: utf8
+      - write:
+          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f13"
+          value: "01"
+          wait_after_ms: 200
+      - write:
+          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f14"
+          value: "01"
+
+  - !BleCentral:
+    name: "Wait For Device Online Over BLE"
+    device: "GoraGateway_01B4EE"
+    service: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f10"
+    scan_timeout_s: 30
+    actions:
+      - read:
+          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f15"
+          validation: "value == 01"
+          attempts: 15
+          retry_wait_ms: 2000
 
   - !MqttSubscribe:
-    name: "Listen for Device Shadow updates and SubGHz uplinks"
+    name: "Setup Mqtt Subscriber"
     session: "iot"
     endpoint: "a2onrynswccrx9-ats.iot.us-east-1.amazonaws.com"
     client_id: "gateway-01-test-listener"
@@ -46,7 +88,7 @@ commands:
     timeout_s: 15
 
   - !SubghzSim:
-    name: "Add simulated sensors"
+    name: "Add Simulated Sensors"
     port: "/dev/ttyUSB0"
     baud: 115200
     duration_s: 30
@@ -57,12 +99,12 @@ commands:
         wait_after_ms: 10
 
   - !MqttExpect:
-    name: "Collect Mqtt Messages"
+    name: "Collect Simulated Sensors Messages"
     session: "iot"
     topic: "gora/gateway-01/subghz/#"
     validation: "count == 12"
     timeout_s: 10
 
   - !MqttDisconnect:
-    name: "Close the listener"
+    name: "Close The Listener"
     session: "iot"

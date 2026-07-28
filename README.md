@@ -123,38 +123,67 @@ Runs a scripted sub-GHz simulator session over a serial link: opens the port, ap
     A bad action **fails the scenario** rather than being skipped: an unknown sensor type, a non-numeric id or a malformed `set` is rejected while parsing the file, before any hardware is touched, and an unknown sensor id or a field the sensor's type does not have fails when the action runs.
 
 ### `!BleCentral`
-Acts as a Bluetooth LE central: connects to a peripheral by advertised name (or address) and writes a sequence of GATT characteristics, then disconnects. Wraps `tools/ble_gatt` — see [its README](tools/ble_gatt/README.md) for the standalone REPL, UUID/value notation, and troubleshooting.
+Acts as a Bluetooth LE central: connects to a peripheral by advertised name (or address), runs a sequence of `actions`, then disconnects. Wraps `tools/ble_gatt` — see [its README](tools/ble_gatt/README.md) for the standalone REPL, UUID/value notation, and troubleshooting.
 
-Self-contained like `!SubghzSim`: the connection lives for this command only, so nothing is left holding the adapter (and blocking the device from advertising) afterwards.
+Self-contained like `!SubghzSim`: the connection lives for this command only, so nothing is left holding the adapter (and blocking the device from advertising) afterwards. This also makes it the right tool for waiting on something *after* a device reset that drops the BLE link: reconnecting is a fresh `!BleCentral` command, not something the command that triggered the reset stays open for.
 *   `name`: (Optional) Descriptive log name.
 *   `device`: (Required) The peripheral's advertised name (e.g. `GoraGateway_01B4EE`), or its Bluetooth address (`AA:BB:CC:DD:EE:FF`). A name is resolved by scanning; an address connects directly, skipping the scan.
-*   `service`: (Optional) Default service UUID for every characteristic below. Each entry can override it with its own `service`.
-*   `characteristics`: (Required) A non-empty list of characteristics to write, in order. Each entry takes:
-    *   `uuid`: (Required) Characteristic UUID — 16-bit shorthand (`2a00`) or full 128-bit.
-    *   `value`: (Required) The value to write, interpreted per `encoding`.
-    *   `encoding`: (Optional) `hex` (default), `utf8`, `uint8`, `uint16`, or `uint32`. Integers are little-endian, matching the Bluetooth spec's own numeric fields.
-    *   `service`: (Optional) Service UUID for just this characteristic, overriding the command-level `service`.
-    *   `response`: (Optional) `true` (default) waits for the device to acknowledge the write, so a rejection fails the test; `false` is fire-and-forget.
-    *   `wait_after_ms`: (Optional) Pause after this write before the next one.
+*   `service`: (Optional) Default service UUID for every action below. Each can override it with its own `service`.
+*   `actions`: (Required) A non-empty list run in order, on the one connection. Each entry has exactly one verb key. Every verb also accepts `attempts` and `retry_wait_ms` (below), so any action can retry itself without a separate wrapping construct.
+    *   `write`: Write a characteristic.
+        *   `uuid`: (Required) Characteristic UUID — 16-bit shorthand (`2a00`) or full 128-bit.
+        *   `value`: (Required) The value to write, interpreted per `encoding`.
+        *   `encoding`: (Optional) `hex` (default), `utf8`, `uint8`, `uint16`, or `uint32`. Integers are little-endian, matching the Bluetooth spec's own numeric fields.
+        *   `service`: (Optional) Overrides the command-level `service`.
+        *   `response`: (Optional) `true` (default) waits for the device to acknowledge the write, so a rejection fails the test; `false` is fire-and-forget.
+        *   `wait_after_ms`: (Optional) Pause after this action succeeds, before the next one in `actions` runs.
+    *   `read`: Read a characteristic, optionally asserting on its value.
+        *   `uuid`: (Required) Characteristic UUID to read.
+        *   `validation`: (Optional) A `"value <op> <literal>"` expression — see below. Omit to just read and log the value without asserting anything about it.
+        *   `encoding`, `service`, `wait_after_ms`: (Optional) Same as `write`.
+    *   `notify`: Wait for a `validation` expression to be satisfied by a **pushed** notification. Ignores values that don't satisfy it and keeps waiting, rather than failing on the first mismatch — a device reporting an intermediate state (e.g. "booting") before the expected one is normal. A real push notification can be missed in a narrow window right after reconnecting (e.g. following a device reset); `read` with `attempts` (below) is the reliable alternative for that case.
+        *   `uuid`: (Required) Characteristic UUID to subscribe to.
+        *   `validation`: (Required) See below.
+        *   `encoding`, `service`, `wait_after_ms`: (Optional) Same as `write`.
+        *   `timeout_s`: (Optional) Seconds to wait before failing the command. Defaults to `30`.
+    *   `attempts`: (Optional, any verb) Retries this one action, on the same connection, up to this many times before giving up. Defaults to `1` (no retry). The general way to poll: a `read` with `validation` fails whenever the value doesn't satisfy it yet, so giving it `attempts` repeats the read until it does — replacing what would otherwise need a hand-written retry loop.
+    *   `retry_wait_ms`: (Optional, any verb) Pause between a failed attempt and the next one. Defaults to `1000`. Distinct from `wait_after_ms`, which only applies once the action has succeeded.
 *   `adapter`: (Optional) Bluetooth adapter to use, e.g. `hci0`. Defaults to the system default.
-*   `scan_timeout_s`: (Optional) Seconds to scan when resolving `device` by name. Defaults to `8`.
+*   `scan_timeout_s`: (Optional) Seconds to scan when resolving `device` by name. Defaults to `8`. Raise this on a command that reconnects right after a device reboot, since it needs time to start advertising again before a scan will find it.
 *   `connect_timeout_s`: (Optional) Seconds to wait for the connection itself. Defaults to `15`.
+
+`read` and `notify`'s `validation` is a `"value <op> <literal>"` expression, where `<op>` is `==` or `!=` and `<literal>` is interpreted per `encoding`. Examples: `"value == 01"`, `"value != 00"`. Unlike `!MqttExpect`'s count, ordering operators (`>=`, `<=`, `>`, `<`) aren't supported — a GATT payload has no general ordering once encodings other than a fixed-width integer are allowed.
 
 ```yaml
   - !BleCentral:
     name: "Provision the gateway over BLE"
     device: "GoraGateway_01B4EE"
     service: "0000ffe0-0000-1000-8000-00805f9b34fb"
-    characteristics:
-      - uuid: "0000ffe1-0000-1000-8000-00805f9b34fb"
-        value: "MyWifiSSID"
-        encoding: utf8
-        wait_after_ms: 200
-      - uuid: "0000ffe2-0000-1000-8000-00805f9b34fb"
-        value: "01"
+    actions:
+      - write:
+          uuid: "0000ffe1-0000-1000-8000-00805f9b34fb"
+          value: "MyWifiSSID"
+          encoding: utf8
+          wait_after_ms: 200
+      - write:
+          uuid: "0000ffe2-0000-1000-8000-00805f9b34fb"
+          value: "01"
+
+  # A device reset drops the BLE link, so this is a second, independent
+  # command rather than something the one above stays connected for.
+  - !BleCentral:
+    name: "Wait for the gateway to come back online"
+    device: "GoraGateway_01B4EE"
+    scan_timeout_s: 30
+    actions:
+      - read:
+          uuid: "0000ffe3-0000-1000-8000-00805f9b34fb"
+          validation: "value == 01"
+          attempts: 15
+          retry_wait_ms: 2000
 ```
 
-A bad UUID, an unknown encoding or a value that doesn't fit it **fails while parsing the file**, before the radio is touched — so a malformed scenario cannot leave a device half-configured. A missing device, a service or characteristic the peripheral doesn't expose, or a rejected write fails when the command runs.
+A bad UUID, an unknown encoding, a malformed `validation` expression, or a value that doesn't fit it **fails while parsing the file**, before the radio is touched — so a malformed scenario cannot leave a device half-configured. A missing device, a service or characteristic the peripheral doesn't expose, a rejected write, or a `read`/`notify` assertion that isn't satisfied fails when the command runs — after exhausting `attempts`, if given one greater than `1`.
 
 > Note: only the central role exists. A peripheral role (this host advertising its own GATT server) is not implemented yet.
 
