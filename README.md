@@ -7,7 +7,7 @@ An automated, YAML-driven test execution and hardware control tool designed to p
 ## 1. Setup and Installation
 
 ### Prerequisites
-*   Python 3.8 or higher.
+*   Python 3.10 or higher. (The codebase uses PEP 604 unions such as `-> Wrapper | None` in function signatures, which are evaluated at import time, so 3.9 and earlier fail immediately with a `TypeError`.)
 *   (Optional but recommended) SEGGER J-Link Software and Documentation Pack installed (adds `JLinkExe` / `JLink.exe` to your PATH).
 
 ### Installation Steps
@@ -28,6 +28,204 @@ An automated, YAML-driven test execution and hardware control tool designed to p
     ```bash
     pip install -r requirements-rpi.txt
     ```
+
+### Running in Docker on a Raspberry Pi test node
+
+A `Dockerfile` is provided so a new HIL test node can be provisioned without
+installing Python packages on the Pi itself. **This layer covers GPIO,
+serial and BLE scenarios** — J-Link and MQTT need additional device access
+that later steps add.
+
+Build the image on the Pi (native build, no cross-compilation needed):
+
+```bash
+docker build -t gora-testing-tool .
+```
+
+Run a scenario, passing through the GPIO and serial devices:
+
+```bash
+docker run --rm \
+  --device /dev/gpiomem \
+  --device /dev/ttyUSB0 \
+  -e TZ=Europe/Dublin \
+  -v "$PWD/firmware:/app/firmware:ro" \
+  -v "$PWD/results:/app/results" \
+  gora-testing-tool \
+  -t scenarios/test.yml -p /dev/ttyUSB0
+```
+
+Notes on this invocation:
+
+*   Arguments after the image name go straight to `main.py`, so every flag in
+    section 2 works unchanged.
+*   `/dev/gpiomem` is what `RPi.GPIO` memory-maps to drive pins. Without it,
+    `!GpioControl` falls back to logging the pin change instead of performing
+    it, and the scenario still passes — so an absent device is easy to miss.
+    Check the logs for `RPi.GPIO is not available` to confirm you are driving
+    real hardware.
+*   `results/` must be bind-mounted or the HTML report is written inside the
+    container and lost when it exits.
+*   `firmware/` is mounted read-only; it is `.gitignore`d and therefore not
+    part of the image.
+*   Certificates are deliberately **not** baked into the image (see
+    `.dockerignore`); they are mounted when MQTT support is added.
+*   `--device` bindings are resolved once at container start. If a DUT
+    power-cycles mid-scenario and re-enumerates, the node disappears from the
+    container. Scenarios that reset the device need `--privileged -v /dev:/dev`
+    instead; this is covered in a later step along with stable udev symlinks.
+*   The container runs as root so it does not have to match the host's
+    `dialout` and `gpio` group IDs, which differ across Raspberry Pi OS
+    releases.
+
+#### Running `!BleCentral` scenarios in Docker
+
+No extra image layer is needed for BLE: `tools/ble_gatt` depends only on
+`bleak>=3.0`, already installed via the image's `-r requirements.txt` chain.
+On Linux, bleak talks to the **host's** `bluetoothd` over D-Bus rather than
+touching `/dev` directly, so this needs a D-Bus socket, not a device
+passthrough:
+
+```bash
+docker run --rm \
+  -v /var/run/dbus:/var/run/dbus \
+  -e TZ=Europe/Dublin \
+  -v "$PWD/results:/app/results" \
+  gora-testing-tool \
+  -t scenarios/gateway.yml
+```
+
+*   `bluetooth.service` must be running on the **Pi itself**, not the
+    container — BlueZ owns the adapter; the container only ever talks to it
+    over D-Bus.
+*   No `--device` or `--privileged` is needed for the adapter, because the
+    container never opens the HCI device directly. The container already
+    runs as root, which is what lets the D-Bus connection satisfy BlueZ's
+    default policy without extra grants.
+*   If a `!BleCentral` command times out scanning/connecting from inside the
+    container even though `bluetoothctl` works fine on the host, try
+    `--net=host` as a fallback — it should not normally be required.
+*   `adapter:` in the YAML (e.g. `hci0`) still refers to the host's adapter
+    name, unchanged from running outside Docker.
+
+#### Running as a GitHub Actions self-hosted runner
+
+`entrypoint.sh` (the image's `ENTRYPOINT`) has two modes, chosen by whether
+`GH_PAT` and `GH_REPO` are set at `docker run` time:
+
+*   **Neither set (default):** unchanged one-shot behavior — `docker run
+    gora-testing-tool -t scenarios/gateway.yml` runs that scenario and
+    exits, exactly as in every example above.
+*   **Both set:** the container registers itself as a GitHub Actions
+    self-hosted runner for `GH_REPO` and runs in the foreground instead.
+    Workflow job steps (e.g. `run: python main.py -t scenarios/gateway.yml`)
+    then execute *inside this same container* — that's how a self-hosted
+    runner works, so no `docker exec` or extra plumbing is needed. On
+    `docker stop` it deregisters itself before exiting.
+
+```bash
+docker run -d --name gora-node --restart unless-stopped \
+  -e GH_PAT=ghp_xxx \
+  -e GH_REPO=owner/repo \
+  -e RUNNER_NAME=rpi1 \
+  -e RUNNER_LABELS=rpi1 \
+  -v /var/run/dbus:/var/run/dbus \
+  -v "$PWD/firmware:/app/firmware:ro" \
+  -v "$PWD/results:/app/results" \
+  gora-testing-tool
+```
+
+*   `GH_PAT`: a GitHub PAT with "Administration" write access on `GH_REPO`
+    (fine-grained) or the classic `repo` scope — used to mint a fresh
+    registration/removal token from the GitHub API each time, since a
+    manually-generated registration token expires after about an hour.
+    Visible via `docker inspect` on whatever host runs the container, so
+    scope it tightly.
+*   `RUNNER_LABELS` lets a workflow target one specific node's hardware,
+    e.g. `runs-on: [self-hosted, rpi1]`.
+*   Add `--device`/other flags here the same way the sections above do, for
+    whichever scenario tags this node's workflows actually exercise.
+
+#### Deploying the image to multiple Raspberry Pi nodes
+
+Building natively on every single Pi does not scale once you have a fleet
+of them. `deploy_docker_to_rpis.sh` cross-builds the image once, on your
+(x86_64) PC, using Docker Buildx with QEMU emulation for `linux/arm64`,
+streams it into `docker load` on every target Pi over a single SSH pipe
+per target, then starts (or replaces) each one as a self-hosted runner per
+the section above — no registry, no local tarball:
+
+```bash
+GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
+```
+
+*   `GH_PAT` (required): as described above. `GH_REPO` defaults to this
+    repo's own `origin` remote; set it explicitly to target a different one.
+*   Each node's runner name/label defaults to the part before `@` in its SSH
+    target (`rpi1@...` → label `rpi1`), so a workflow can target one
+    specific Pi with `runs-on: [self-hosted, rpi1]`. Give it an explicit
+    name instead with `target:name`, e.g.
+    `rpi@192.168.1.42:rpi1 rpi@192.168.1.43:rpi2` — needed whenever more
+    than one node logs in as the same SSH user (a common Pi default), since
+    otherwise they'd all derive the same label and fight over it.
+*   GPIO (`/dev/gpiomem`) and BLE (the D-Bus socket) are passed to every
+    node by default, since every Pi 4 test node has both.
+*   `EXTRA_DOCKER_RUN_ARGS` (optional): flags appended to every node's
+    `docker run` for anything that *does* vary per node, e.g.
+    `EXTRA_DOCKER_RUN_ARGS='--device /dev/ttyUSB0'` for serial scenarios —
+    it applies the same to every target in one invocation, so group nodes
+    with matching extra hardware into separate script runs if they differ.
+*   At the end, it prints each node's container IP (from `docker inspect`
+    on that node) alongside its SSH target.
+
+One-time setup on a plain Linux Docker install (Docker Desktop on Mac/Windows
+already bundles this):
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+```
+
+If a target Pi doesn't have Docker yet (e.g. a freshly imaged SD card), the
+script installs it automatically via the official `get.docker.com` script
+and adds the SSH user to the `docker` group — this needs passwordless
+`sudo` on that account (the default on a Pi set up through Raspberry Pi
+Imager); otherwise it stops with instructions to install Docker manually.
+
+The image is tagged with the local `git rev-parse --short HEAD`, so
+`docker images` on any node shows exactly which commit it is running. The
+emulated build is noticeably slower than a native one — expect it to take
+longer than building the same image directly on a Pi.
+
+`scenarios/` is baked into the image, so editing a scenario file needs a
+rebuild + redeploy, not a file copy; `firmware/` and `results/` are
+bind-mounted from `~/gora-testing-tool/` on each node (created
+automatically) and are not touched by rebuilds.
+
+##### Troubleshooting runner registration
+
+If a node comes up but the runner never appears under the repo's
+Settings → Actions → Runners, check what actually happened inside the
+container — with `--restart unless-stopped`, a registration failure just
+crash-loops silently instead of surfacing in the deploy script's output:
+
+```bash
+ssh <target> docker logs --tail 50 gora-node
+```
+
+*   **`GH_REPO` must be `owner/repo`**, e.g. `kamilgardziejczyk-debug/gora-testing-tool`
+    — not a full URL. The entrypoint builds `https://github.com/${GH_REPO}`
+    itself, so a URL value doubles up wrong.
+*   **A `curl ... 404` fetching the registration token** almost always means
+    the PAT can't see that repo, not that the repo doesn't exist — GitHub
+    returns 404 rather than 403 for a repo a token has no access to, to
+    avoid confirming it exists. A fine-grained PAT only covers the
+    repositories explicitly picked under "Repository access" *when it was
+    created*, each with its own permissions — pointing `GH_REPO` at a repo
+    the PAT wasn't scoped to (or was scoped to without "Administration:
+    Read and write") reproduces this exactly. Fix it under
+    `https://github.com/settings/personal-access-tokens`: add the repo to
+    the token's access list (or generate a new token scoped to it) with
+    "Administration: Read and write", then redeploy.
 
 ---
 

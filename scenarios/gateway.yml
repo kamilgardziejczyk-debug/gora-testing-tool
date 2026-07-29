@@ -46,7 +46,7 @@ commands:
           encoding: utf8
       - write:
           uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f12"
-          value: ""
+          value: "Belussi-1988"
           encoding: utf8
       - write:
           uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f13"

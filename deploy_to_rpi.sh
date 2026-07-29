@@ -11,7 +11,7 @@ RPI_USER="${SSH_TARGET%%@*}"
 RPI_IP="${SSH_TARGET##*@}"
 REMOTE_DIR="/home/${RPI_USER}/gora-testing-tool"
 VENV_DIR="${REMOTE_DIR}/.venv"
-SSH_OPTS="-o ConnectTimeout=10 -o BatchMode=yes"
+SSH_OPTS="-o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 SSH="ssh ${SSH_OPTS} ${RPI_USER}@${RPI_IP}"
 
 GREEN="\033[0;32m"

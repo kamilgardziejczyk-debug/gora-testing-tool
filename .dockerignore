@@ -1,0 +1,57 @@
+# Build context exclusions for the HIL test node image.
+#
+# Anything a test node receives at *runtime* (certs, firmware, reports) is
+# bind-mounted rather than baked in, so it is excluded here on purpose.
+
+# Version control
+.git/
+.gitignore
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.so
+
+# Local virtualenv - the image builds its own at /opt/venv
+.venv/
+venv/
+ENV/
+env/
+active_env/
+
+# Secrets. Device certs and private keys are mounted at run time; baking them
+# into a layer would ship them to every node that pulls the image.
+certs/
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
+# Per-node artefacts, bind-mounted at run time
+firmware/
+results/
+reports/
+tmp/
+*.log
+*.jlink
+
+# Host-side tooling, not used inside the container
+deploy_to_rpi.sh
+deploy_docker_to_rpis.sh
+copy_firmware_to_rpi.sh
+
+# Editor / IDE / agent files
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+CLAUDE.md
+GEMINI.md
+
+# Docker's own files
+Dockerfile
+.dockerignore
+docker-compose*.yml
