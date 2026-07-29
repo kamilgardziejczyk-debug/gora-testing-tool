@@ -95,9 +95,9 @@ class SubghzSimWrapper(Wrapper):
             return []
 
         actions: list[Action] = []
-        for action_node in actions_node.value:
+        for index, action_node in enumerate(actions_node.value):
             if not isinstance(action_node, yaml.MappingNode):
-                continue
+                raise ValueError(f"SubghzSim: action #{index + 1} must be a mapping")
 
             verb: str | None = None
             arg = ""
@@ -113,8 +113,9 @@ class SubghzSimWrapper(Wrapper):
                     arg = value_node.value
 
             if verb is None:
-                LOGGER.warning("Skipping SubghzSim action with no recognized verb (%s)", ACTION_VERBS)
-                continue
+                raise ValueError(
+                    f"SubghzSim: action #{index + 1} must have one of: {', '.join(sorted(ACTION_VERBS))}"
+                )
 
             actions.append(self._build_action(verb, arg, wait_after_ms))
 

@@ -10,10 +10,10 @@ from wrappers import (
     MqttDisconnectWrapper,
     MqttExpectWrapper,
     MqttSubscribeWrapper,
-    ProgramEsptoolWarpper,
-    ProgramJlinkWarpper,
+    ProgramEsptoolWrapper,
+    ProgramJlinkWrapper,
     SubghzSimWrapper,
-    UsbSwitchWarpper,
+    UsbSwitchWrapper,
     Wrapper,
 )
 
@@ -21,11 +21,11 @@ from wrappers import (
 LOGGER = logging.getLogger(__name__)
 
 WRAPPER_BY_TAG = {
-    "ProgramEsptool": ProgramEsptoolWarpper,
-    "ProgramJlink": ProgramJlinkWarpper,
+    "ProgramEsptool": ProgramEsptoolWrapper,
+    "ProgramJlink": ProgramJlinkWrapper,
     "ExecuteCommand": ExecuteCommandWrapper,
     "GpioControl": GpioControlWrapper,
-    "UsbSwitch": UsbSwitchWarpper,
+    "UsbSwitch": UsbSwitchWrapper,
     "SubghzSim": SubghzSimWrapper,
     "BleCentral": BleCentralWrapper,
     "MqttSubscribe": MqttSubscribeWrapper,

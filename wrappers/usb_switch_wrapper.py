@@ -8,7 +8,7 @@ from .wrapper import Wrapper
 LOGGER = logging.getLogger(__name__)
 
 
-class UsbSwitchWarpper(Wrapper):
+class UsbSwitchWrapper(Wrapper):
     def __init__(self, command_node: yaml.MappingNode):
         self.command_node = command_node
         self.name: str | None = None

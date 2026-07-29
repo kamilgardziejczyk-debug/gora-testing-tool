@@ -15,7 +15,7 @@ PARTITION_TABLE_FLASH_ADDRESS = 0x8000
 FIRMWARE_FLASH_ADDRESS = 0x10000
 
 
-class ProgramEsptoolWarpper(Wrapper):
+class ProgramEsptoolWrapper(Wrapper):
     def __init__(self, command_node: yaml.MappingNode):
         self.command_node = command_node
         self.name: str | None = None
@@ -51,6 +51,22 @@ class ProgramEsptoolWarpper(Wrapper):
             elif key == "firmware":
                 self.firmware = value_node.value
 
+        if self.bootloader is None:
+            raise ValueError("ProgramEsptool: no bootloader filename specified in YAML")
+        if self.partition_table is None:
+            raise ValueError("ProgramEsptool: no partition_table filename specified in YAML")
+        if self.firmware is None:
+            raise ValueError("ProgramEsptool: no firmware filename specified in YAML")
+
+        # A relative firmware_dir set in YAML resolves against the scenario file, so
+        # a scenario and its firmware can be moved together as a portable directory
+        # tree. Not applied to a CLI --firmware value, which is already relative to
+        # the shell's own working directory.
+        if self.firmware_dir is not None:
+            firmware_dir_path = Path(self.firmware_dir)
+            if not firmware_dir_path.is_absolute() and self.scenario_dir is not None:
+                self.firmware_dir = str(self.scenario_dir / firmware_dir_path)
+
         LOGGER.info(
             "Parsed ProgramEsptool values: name=%s, port=%s, baudrate=%s, firmware_dir=%s, bootloader=%s, "
             "partition_table=%s, firmware=%s",
@@ -64,16 +80,13 @@ class ProgramEsptoolWarpper(Wrapper):
         )
 
     def execute(self) -> None:
+        # port and firmware_dir can't be validated at parse time like the fields above:
+        # apply_cli_overrides() may still fill them in from -p/--firmware after parse()
+        # runs, so their absence is only certain once execute() is reached.
         if self.port is None:
             raise ValueError("ProgramEsptool: no serial port specified (set in YAML or pass --port on the command line)")
         if self.firmware_dir is None:
             raise ValueError("ProgramEsptool: no firmware directory specified (pass --firmware on the command line)")
-        if self.bootloader is None:
-            raise ValueError("ProgramEsptool: no bootloader filename specified in YAML")
-        if self.partition_table is None:
-            raise ValueError("ProgramEsptool: no partition_table filename specified in YAML")
-        if self.firmware is None:
-            raise ValueError("ProgramEsptool: no firmware filename specified in YAML")
 
         base = Path(self.firmware_dir)
         if not base.is_dir():
@@ -94,9 +107,14 @@ class ProgramEsptoolWarpper(Wrapper):
         ]
 
         LOGGER.info("Connecting to ESP32 on %s at %d baud", self.port, self.baudrate)
-        esp = esptool.detect_chip(port=self.port, baud=self.baudrate)
 
-        try:
+        # `with` relies on ESPLoader's own __enter__/__exit__ to close the port,
+        # rather than reaching into its private `_port` attribute ourselves.
+        # run_stub() returns a different (stub loader) instance sharing the same
+        # underlying port, but the `with` statement holds onto the original
+        # detect_chip() instance regardless of what `esp` gets reassigned to, so
+        # __exit__ still closes the right port on the way out.
+        with esptool.detect_chip(port=self.port, baud=self.baudrate) as esp:
             esp = esptool.run_stub(esp)
             LOGGER.info(
                 "Flashing bootloader=%s, partition_table=%s, firmware=%s",
@@ -107,5 +125,3 @@ class ProgramEsptoolWarpper(Wrapper):
             esptool.write_flash(esp, flash_data)
             LOGGER.info("Flash complete, resetting device")
             esp.hard_reset()
-        finally:
-            esp._port.close()

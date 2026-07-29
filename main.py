@@ -7,7 +7,7 @@ from pathlib import Path
 
 from parser import Parser
 from reporting import TestResult, generate_report
-from wrappers import ProgramEsptoolWarpper, ProgramJlinkWarpper, Wrapper, gpio_cleanup_all, mqtt_registry
+from wrappers import ProgramEsptoolWrapper, ProgramJlinkWrapper, Wrapper, gpio_cleanup_all, mqtt_registry
 
 
 LOGGER = logging.getLogger(__name__)
@@ -61,14 +61,14 @@ def load_scenario(test_file: str) -> list[Wrapper]:
 
 def apply_cli_overrides(wrappers: list[Wrapper], port: str | None, firmware: str | None) -> None:
     for wrapper in wrappers:
-        if isinstance(wrapper, ProgramEsptoolWarpper):
+        if isinstance(wrapper, ProgramEsptoolWrapper):
             if port is not None:
                 LOGGER.info("Overriding serial port with CLI value: %s", port)
                 wrapper.port = port
             if firmware is not None:
                 LOGGER.info("Overriding firmware directory with CLI value: %s", firmware)
                 wrapper.firmware_dir = firmware
-        elif isinstance(wrapper, ProgramJlinkWarpper):
+        elif isinstance(wrapper, ProgramJlinkWrapper):
             if firmware is not None:
                 LOGGER.info("Overriding J-Link firmware directory with CLI value: %s", firmware)
                 wrapper.firmware_dir = firmware

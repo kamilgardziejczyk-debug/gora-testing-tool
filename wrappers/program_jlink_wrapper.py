@@ -15,7 +15,7 @@ DEFAULT_INTERFACE = "SWD"
 DEFAULT_SPEED = 4000
 
 
-class ProgramJlinkWarpper(Wrapper):
+class ProgramJlinkWrapper(Wrapper):
     """
     Wrapper for programming devices using the SEGGER J-Link command-line tool.
     """
@@ -58,6 +58,26 @@ class ProgramJlinkWarpper(Wrapper):
             elif key == "timeout_s":
                 self.timeout_s = float(value_node.value)
 
+        if self.device is None:
+            raise ValueError("ProgramJlink: 'device' (MCU name) must be specified in YAML")
+        if self.firmware is None:
+            raise ValueError("ProgramJlink: no firmware filename specified in YAML")
+
+        # Only depends on the filename's own suffix, not the resolved firmware_dir,
+        # so it can be checked here rather than waiting for execute().
+        suffix = Path(self.firmware).suffix.lower()
+        if suffix in {".bin", ".raw"} and not self.address:
+            raise ValueError("ProgramJlink: 'address' is required for raw binary files (.bin / .raw)")
+
+        # A relative firmware_dir set in YAML resolves against the scenario file, so
+        # a scenario and its firmware can be moved together as a portable directory
+        # tree. Not applied to a CLI --firmware value, which is already relative to
+        # the shell's own working directory.
+        if self.firmware_dir is not None:
+            firmware_dir_path = Path(self.firmware_dir)
+            if not firmware_dir_path.is_absolute() and self.scenario_dir is not None:
+                self.firmware_dir = str(self.scenario_dir / firmware_dir_path)
+
         LOGGER.info(
             "Parsed ProgramJlink values: name=%s, device=%s, interface=%s, speed=%d, firmware_dir=%s, "
             "firmware=%s, address=%s, timeout_s=%s",
@@ -72,10 +92,9 @@ class ProgramJlinkWarpper(Wrapper):
         )
 
     def execute(self) -> None:
-        if self.device is None:
-            raise ValueError("ProgramJlink: 'device' (MCU name) must be specified in YAML")
-        if self.firmware is None:
-            raise ValueError("ProgramJlink: no firmware filename specified in YAML")
+        # firmware_dir can't be validated at parse time: apply_cli_overrides() may still
+        # fill it in from --firmware after parse() runs, so its absence is only certain
+        # once execute() is reached.
         if self.firmware_dir is None:
             raise ValueError("ProgramJlink: no firmware directory specified (pass --firmware on command line)")
 
@@ -86,11 +105,6 @@ class ProgramJlinkWarpper(Wrapper):
         firmware_path = base / self.firmware
         if not firmware_path.is_file():
             raise FileNotFoundError(f"ProgramJlink: binary not found: {firmware_path}")
-
-        # If it's a raw binary, an address is required for JLinkExe
-        suffix = firmware_path.suffix.lower()
-        if suffix in {".bin", ".raw"} and not self.address:
-            raise ValueError("ProgramJlink: 'address' is required for raw binary files (.bin / .raw)")
 
         # Create temporary script file for J-Link Commander
         script_cmds = [

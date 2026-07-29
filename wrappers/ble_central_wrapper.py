@@ -268,6 +268,13 @@ class BleCentralWrapper(Wrapper):
             raise ValueError(f"BleCentral: {label} ({uuid}) has an invalid value: {error}") from None
 
         attempts, retry_wait_ms = self._parse_retry_fields(label, attempts, retry_wait_ms)
+        if attempts > 1:
+            raise ValueError(
+                f"BleCentral: {label} ({uuid}) sets attempts={attempts}, but writes cannot be retried safely - "
+                f"a characteristic may already have acted on the first write before a timeout/error is reported, "
+                f"so a retry could apply it twice. Use 'attempts: 1' (or omit it) for writes; retries are only "
+                f"supported on 'read' and 'notify' actions."
+            )
         return WriteAction(
             uuid=self._normalize(f"{label} uuid", uuid),
             value=encoded,
@@ -456,10 +463,27 @@ class BleCentralWrapper(Wrapper):
             except (ValueError, TimeoutError, ConnectionError, IOError, RuntimeError) as error:
                 last_error = error
                 if attempt < action.attempts:
-                    LOGGER.info(
-                        "BleCentral: attempt %d/%d failed, retrying in %dms: %s",
-                        attempt, action.attempts, action.retry_wait_ms, error,
-                    )
+                    if not central.is_connected:
+                        # The link itself dropped, not just this action - retrying on a dead
+                        # connection would fail identically `attempts` times. Reconnect once
+                        # instead, so the retry has something to actually run against; if that
+                        # fails too, there's no point burning the remaining attempts.
+                        LOGGER.warning(
+                            "BleCentral: link dropped on attempt %d/%d, reconnecting before retrying: %s",
+                            attempt, action.attempts, error,
+                        )
+                        try:
+                            central.connect(self.device)
+                        except (ConnectionError, TimeoutError) as reconnect_error:
+                            raise ConnectionError(
+                                f"BleCentral: link dropped on attempt {attempt}/{action.attempts} and "
+                                f"reconnect failed: {reconnect_error}"
+                            ) from error
+                    else:
+                        LOGGER.info(
+                            "BleCentral: attempt %d/%d failed, retrying in %dms: %s",
+                            attempt, action.attempts, action.retry_wait_ms, error,
+                        )
                     time.sleep(action.retry_wait_ms / 1000)
                     continue
                 if action.attempts > 1:
