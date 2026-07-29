@@ -19,21 +19,24 @@ class UsbSwitchWrapper(Wrapper):
         if tag_name != "UsbSwitch":
             raise ValueError("Expected !UsbSwitch command")
 
-        values: dict[str, str | bool] = {}
         for key_node, value_node in self.command_node.value:
             if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
                 continue
 
             key = key_node.value
             if key == "name":
-                values[key] = value_node.value
+                self.name = value_node.value
             elif key == "state":
-                values[key] = value_node.value.lower() == "true"
+                self.state = value_node.value.lower() == "true"
 
-        self.name = str(values.get("name")) if values.get("name") is not None else None
-        self.state = bool(values.get("state")) if values.get("state") is not None else None
+        if self.state is None:
+            raise ValueError("UsbSwitch: 'state' field is required")
 
         LOGGER.info("Parsed UsbSwitch values: name=%s, state=%s", self.name, self.state)
 
     def execute(self) -> None:
-        LOGGER.info("UsbSwitch wrapper execute called")
+        LOGGER.warning(
+            "UsbSwitch is a no-op stub: requested state=%s was not applied to any hardware. "
+            "Implement UsbSwitchWrapper.execute() before relying on this in a real scenario.",
+            self.state,
+        )

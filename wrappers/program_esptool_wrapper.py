@@ -28,7 +28,7 @@ class ProgramEsptoolWrapper(Wrapper):
 
     def parse(self) -> None:
         tag_name = self.command_node.tag.lstrip("!").rstrip(":")
-        if tag_name not in {"ProgramEsptool", "ProgrammEsptool"}:
+        if tag_name != "ProgramEsptool":
             raise ValueError("Expected !ProgramEsptool command")
 
         for key_node, value_node in self.command_node.value:
@@ -51,21 +51,8 @@ class ProgramEsptoolWrapper(Wrapper):
             elif key == "firmware":
                 self.firmware = value_node.value
 
-        if self.bootloader is None:
-            raise ValueError("ProgramEsptool: no bootloader filename specified in YAML")
-        if self.partition_table is None:
-            raise ValueError("ProgramEsptool: no partition_table filename specified in YAML")
-        if self.firmware is None:
-            raise ValueError("ProgramEsptool: no firmware filename specified in YAML")
-
-        # A relative firmware_dir set in YAML resolves against the scenario file, so
-        # a scenario and its firmware can be moved together as a portable directory
-        # tree. Not applied to a CLI --firmware value, which is already relative to
-        # the shell's own working directory.
-        if self.firmware_dir is not None:
-            firmware_dir_path = Path(self.firmware_dir)
-            if not firmware_dir_path.is_absolute() and self.scenario_dir is not None:
-                self.firmware_dir = str(self.scenario_dir / firmware_dir_path)
+        self._validate_parsed_fields()
+        self._resolve_relative_firmware_dir()
 
         LOGGER.info(
             "Parsed ProgramEsptool values: name=%s, port=%s, baudrate=%s, firmware_dir=%s, bootloader=%s, "
@@ -78,6 +65,27 @@ class ProgramEsptoolWrapper(Wrapper):
             self.partition_table,
             self.firmware,
         )
+
+    def _validate_parsed_fields(self) -> None:
+        """Reject a scenario missing YAML-only required fields, before any hardware is touched."""
+        if self.bootloader is None:
+            raise ValueError("ProgramEsptool: no bootloader filename specified in YAML")
+        if self.partition_table is None:
+            raise ValueError("ProgramEsptool: no partition_table filename specified in YAML")
+        if self.firmware is None:
+            raise ValueError("ProgramEsptool: no firmware filename specified in YAML")
+
+    def _resolve_relative_firmware_dir(self) -> None:
+        """Resolve a relative firmware_dir set in YAML against the scenario file.
+
+        Not applied to a CLI --firmware value, which is already relative to the
+        shell's own working directory.
+        """
+        if self.firmware_dir is None:
+            return
+        firmware_dir_path = Path(self.firmware_dir)
+        if not firmware_dir_path.is_absolute() and self.scenario_dir is not None:
+            self.firmware_dir = str(self.scenario_dir / firmware_dir_path)
 
     def execute(self) -> None:
         # port and firmware_dir can't be validated at parse time like the fields above:

@@ -1,7 +1,6 @@
 esptool
-RPi.GPIO
 pyyaml
-paho-mqtt>=2.0
-pyserial
 jinja2
-bleak>=3.0
+-r tools/ble_gatt/requirements.txt
+-r tools/mqtt_listener/requirements.txt
+-r tools/subghz_sim/requirements.txt

@@ -46,7 +46,7 @@ def generate_report(
     html = template.render(
         scenario_name=scenario_path.name,
         started_at=started_at.strftime("%Y-%m-%d %H:%M:%S"),
-        total_duration_s=f"{total_duration_s:.2f}",
+        total_duration_s=total_duration_s,
         results=results,
         passed_count=sum(1 for result in results if result.passed),
         failed_count=sum(1 for result in results if not result.passed),

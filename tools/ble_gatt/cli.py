@@ -13,7 +13,6 @@ from .central import (
     DEFAULT_CONNECT_TIMEOUT_S,
     DEFAULT_SCAN_TIMEOUT_S,
     BleCentral,
-    DeviceNotFound,
 )
 from .values import DEFAULT_ENCODING, ENCODINGS, encode_value, format_value
 
@@ -50,9 +49,6 @@ class BleShell(cmd.Cmd):
 
         try:
             device = self.central.connect(target)
-        except DeviceNotFound as error:
-            print(f"error: {error}")
-            return
         except ConnectionError as error:
             print(f"error: {error}")
             return

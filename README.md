@@ -24,6 +24,10 @@ An automated, YAML-driven test execution and hardware control tool designed to p
     ```bash
     pip install -r requirements.txt
     ```
+    On a Raspberry Pi (or anywhere you want `!GpioControl` to drive real pins instead of falling back to simulation), also install:
+    ```bash
+    pip install -r requirements-rpi.txt
+    ```
 
 ---
 
@@ -92,8 +96,8 @@ Toggles Raspberry Pi GPIO pins (requires `RPi.GPIO`).
 *   `state`: (Required) `true` (HIGH) or `false` (LOW).
 *   `wait_after_s`: (Optional) Time in seconds to sleep after executing the pin change.
 
-### `!UsbSwitch` (or `UsbSwitch`)
-Placeholder wrapper for manipulating a physical USB switch hardware component.
+### `!UsbSwitch`
+**No-op stub** — `execute()` only logs a warning; no USB switch hardware is actually controlled yet. Implement `UsbSwitchWrapper.execute()` before relying on this in a real scenario.
 *   `name`: (Optional) Descriptive log name.
 *   `state`: (Required) `true` (enabled) or `false` (disabled).
 *   `wait_after_s`: (Optional) Time in seconds to wait.
@@ -241,23 +245,7 @@ Runs nested scenario commands sequentially multiple times.
 
 Findings from a source scan of the whole codebase. Ordered by severity; each entry names the file so it can be picked up independently. Nothing here is fixed yet.
 
-### 4.1 Inconsistencies
-
-*   **Dependencies are declared in four places** — `requirements.txt` plus `tools/{ble_gatt,mqtt_listener,subghz_sim}/requirements.txt`, with the per-tool files duplicating root entries. They will drift.
-*   **`RPi.GPIO` is a hard dependency** — `requirements.txt:2` — even though `gpio_control_wrapper.py:3` explicitly handles it being missing and falls back to simulation. On a non-Pi host `pip install -r requirements.txt` can fail outright. Belongs in an optional extra.
-*   **Report durations are formatted in two different places** — `reporting/report.py:49` pre-formats the total to a string in Python while `templates/report.html.j2` formats each row with `"%.2f"|format`. Pick one layer.
-
-### 4.2 Dead and unused code
-
-*   **`ProgrammEsptool` branch is unreachable** — `program_esptool_wrapper.py:31` accepts the misspelling, but the tag is not in `WRAPPER_BY_TAG`, so no scenario can reach it.
-*   **`!UsbSwitch` does nothing** — `usb_switch_wrapper.py:39`. `execute()` only logs; the tag is documented and parseable but has no implementation. Either implement it or mark it clearly as a stub in the README.
-*   **`UsbSwitchWrapper.parse()` round-trips through a throwaway dict** — `usb_switch_wrapper.py:22-34`. It fills a `values` dict, then converts back out with `str()`/`bool()` guards, where every other wrapper assigns directly. It also never validates that `state` was supplied.
-*   **Dead `except` branch in the BLE REPL** — `tools/ble_gatt/cli.py:53-58`. `DeviceNotFound` is a subclass of `ConnectionError` and both branches have identical bodies, so the first can go.
-*   **Redundant exception in the retry tuple** — `ble_central_wrapper.py:456`. `ConnectionError` is already covered by `IOError` (an alias of `OSError`) in the same `except`.
-*   **`poll_characteristic()` has no callers** — `tools/ble_gatt/central.py:349`. It was the wrapper's polling mechanism before `read` + `attempts` replaced it. Still reachable from the Python API and documented in the tool README — decide whether to keep it as public API or drop it.
-*   **`main.py` imports a submodule the package doesn't export** — `from wrappers import mqtt_registry` works only because `mqtt_subscribe_wrapper` happens to `from . import mqtt_registry` first. Add it to `wrappers/__init__.py` explicitly.
-
-### 4.3 Complexity
+### 4.1 Complexity
 
 The project standard is functions ≤ 50 lines. Current offenders:
 
@@ -275,13 +263,13 @@ The project standard is functions ≤ 50 lines. Current offenders:
 Also worth restructuring:
 
 *   **`wrappers/ble_central_wrapper.py` is 541 lines** — the largest file in the project, and roughly a third of it is the three duplicated `_parse_*` methods above.
-*   **Every wrapper hand-rolls the same YAML key loop** — `for key_node, value_node in node.value:` + `isinstance` guards + an `elif` chain, repeated in all ten wrappers. A small declarative field-spec helper (name, type, required, default) would remove most of the parsing code and make required-field validation uniform (see 4.1).
+*   **Every wrapper hand-rolls the same YAML key loop** — `for key_node, value_node in node.value:` + `isinstance` guards + an `elif` chain, repeated in all ten wrappers. A small declarative field-spec helper (name, type, required, default) would remove most of the parsing code and make required-field validation uniform.
 *   **The scenario file is read twice** — `parser/parser.py:44` in `validate()` and `:52` in `parse()`. Compose once and reuse.
 *   **`apply_cli_overrides()` is an `isinstance` chain** — `main.py:62`. Every new flashing wrapper needs an edit here; a `port`/`firmware_dir` capability marker on the wrapper base class would invert the dependency.
 *   **Two unrelated types both named `Action`** — `subghz_sim_wrapper.Action` (a `NamedTuple`) and `ble_central_wrapper.Action` (a `Union` alias). They don't collide, but they read as the same concept.
 
-### 4.4 Missing infrastructure
+### 4.2 Missing infrastructure
 
 *   **No automated tests.** Everything so far has been verified with throwaway scripts against stubs and pty pairs. The pure logic is easy to cover now and would have caught several items above: `parser` tag resolution and `!Loop` expansion, `values.encode_value` / `uuids.normalize_uuid`, `subghz_sim.frame` CRC and encoding, `mqtt_expect` operator/early-exit table, and the BLE `attempts` retry loop — all with no hardware.
-*   **No linter or formatter config.** No `ruff`/`flake8`/`black` setup, so the ≤50-line and PEP 8 standards are unenforced (see 4.3).
+*   **No linter or formatter config.** No `ruff`/`flake8`/`black` setup, so the ≤50-line and PEP 8 standards are unenforced (see 4.1).
 *   **No CI.** Nothing runs the above on a push.

@@ -84,7 +84,7 @@
   </table>
 
   <div class="summary">
-    <strong>Total execution time: {{ total_duration_s }}s</strong>
+    <strong>Total execution time: {{ "%.2f"|format(total_duration_s) }}s</strong>
     &nbsp;&mdash;&nbsp; {{ passed_count }} passed, {{ failed_count }} failed
   </div>
 </body>

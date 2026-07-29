@@ -1,3 +1,4 @@
+from . import mqtt_registry
 from .wrapper import Wrapper
 from .program_esptool_wrapper import ProgramEsptoolWrapper
 from .program_jlink_wrapper import ProgramJlinkWrapper

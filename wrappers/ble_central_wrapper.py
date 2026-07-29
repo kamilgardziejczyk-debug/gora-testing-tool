@@ -460,7 +460,7 @@ class BleCentralWrapper(Wrapper):
         for attempt in range(1, action.attempts + 1):
             try:
                 self._execute_action(central, action)
-            except (ValueError, TimeoutError, ConnectionError, IOError, RuntimeError) as error:
+            except (ValueError, TimeoutError, IOError, RuntimeError) as error:
                 last_error = error
                 if attempt < action.attempts:
                     if not central.is_connected:
