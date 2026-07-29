@@ -198,19 +198,30 @@ on:
 jobs:
   gateway:
     runs-on: [self-hosted, rpi]
-    defaults:
-      run:
-        working-directory: /app
     steps:
+      - name: Download firmware artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gora-gateway-${{ github.sha }}
+          path: firmware
+
       - name: Run gateway scenario
-        run: python main.py -t scenarios/gateway.yml
+        run: |
+          python /app/main.py -t /app/scenarios/gateway.yml \
+            -f "$GITHUB_WORKSPACE/firmware" -r /app/results
 ```
 
 It's `workflow_dispatch`-only (no push/PR trigger) since the scenario
-flashes real firmware and drives real BLE/MQTT/sub-GHz hardware. The step
-runs from `/app` — where this image bakes in `main.py` and `scenarios/` —
-rather than a checkout of `gora-gateway`, so the default `results/` report
-path still resolves to the bind-mounted, persisted `/app/results`.
+flashes real firmware and drives real BLE/MQTT/sub-GHz hardware. No checkout
+of `gora-gateway` (or of this repo) is needed: `main.py` and `scenarios/`
+already live at `/app`, baked into the image at build time, so the step
+invokes them by absolute path rather than relying on `working-directory`.
+That leaves `$GITHUB_WORKSPACE` (the runner's own per-job workspace, unrelated
+to `/app`) free for `download-artifact` to drop the firmware built by an
+earlier job into, which `-f` then points `!ProgramJlink` at — overriding the
+`firmware:` value baked into the YAML — and `-r /app/results` pins the report
+to the bind-mounted, persisted results directory rather than the ephemeral
+job workspace.
 
 #### Deploying the image to multiple Raspberry Pi nodes
 
