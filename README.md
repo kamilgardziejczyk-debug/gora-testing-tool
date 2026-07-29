@@ -108,6 +108,41 @@ docker run --rm \
 *   `adapter:` in the YAML (e.g. `hci0`) still refers to the host's adapter
     name, unchanged from running outside Docker.
 
+#### Running `!ProgramJlink` scenarios in Docker
+
+The image bundles SEGGER's J-Link tools (`JLinkExe`), fetched from SEGGER's
+download server at build time — no separate install step on the Pi. Unlike
+GPIO/serial's fixed device paths, a J-Link probe enumerates as a USB device
+that can renumber, so it needs the whole USB bus rather than one `--device`:
+
+```bash
+docker run --rm \
+  --privileged \
+  -v /dev/bus/usb:/dev/bus/usb \
+  -e TZ=Europe/Dublin \
+  -v "$PWD/firmware:/app/firmware:ro" \
+  -v "$PWD/results:/app/results" \
+  gora-testing-tool \
+  -t scenarios/jlink_test.yml
+```
+
+*   `--privileged -v /dev/bus/usb:/dev/bus/usb` grants access to the whole
+    USB bus rather than one node, since the probe can enumerate under a
+    different `/dev/bus/usb/<bus>/<device>` path each time it's plugged in
+    or power-cycled — a single `--device` binding would need updating to
+    match.
+*   The image installs the J-Link `.deb` unversioned, from SEGGER's own
+    "latest" URL (there's no stable versioned URL for arm64) — a rebuild can
+    therefore pick up a newer J-Link release; check `dpkg -s jlink` inside
+    the container if you need to know exactly which one landed.
+*   The `.deb`'s installer normally reloads udev rules for already-connected
+    probes; the image stubs that out since there's no udev daemon in a
+    container and devices instead reach it via the bind-mount above, so
+    nothing depends on that step actually running.
+*   `firmware:` values in the YAML (e.g. `zephyr.hex`) resolve the same as
+    outside Docker, against whatever `firmware_dir`/`--firmware` gives —
+    typically the mounted `/app/firmware`.
+
 #### Running as a GitHub Actions self-hosted runner
 
 `entrypoint.sh` (the image's `ENTRYPOINT`) has two modes, chosen by whether
@@ -146,6 +181,37 @@ docker run -d --name gora-node --restart unless-stopped \
 *   Add `--device`/other flags here the same way the sections above do, for
     whichever scenario tags this node's workflows actually exercise.
 
+The workflow that runs a scenario belongs in **the repo whose commits should
+trigger it** — e.g. `scenarios/gateway.yml` exercises the gateway firmware,
+so its workflow lives in the `gora-gateway` repo, not here. `GH_REPO` (above)
+must point at that same repo for the runner to pick the job up at all — a
+runner only ever sees workflows defined in the repo it's registered against.
+This repo just supplies the image `/app/main.py` and `scenarios/` run from;
+`gora-gateway`'s own `.github/workflows/gateway.yml` would look like:
+
+```yaml
+name: Gateway Scenario
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gateway:
+    runs-on: [self-hosted, rpi]
+    defaults:
+      run:
+        working-directory: /app
+    steps:
+      - name: Run gateway scenario
+        run: python main.py -t scenarios/gateway.yml
+```
+
+It's `workflow_dispatch`-only (no push/PR trigger) since the scenario
+flashes real firmware and drives real BLE/MQTT/sub-GHz hardware. The step
+runs from `/app` — where this image bakes in `main.py` and `scenarios/` —
+rather than a checkout of `gora-gateway`, so the default `results/` report
+path still resolves to the bind-mounted, persisted `/app/results`.
+
 #### Deploying the image to multiple Raspberry Pi nodes
 
 Building natively on every single Pi does not scale once you have a fleet
@@ -160,7 +226,9 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
 ```
 
 *   `GH_PAT` (required): as described above. `GH_REPO` defaults to this
-    repo's own `origin` remote; set it explicitly to target a different one.
+    repo's own `origin` remote, but in practice you almost always want it
+    set explicitly to whichever repo's workflows should trigger a run (e.g.
+    `gora-gateway`) — see the note above on where that workflow file lives.
 *   Each node's runner name/label defaults to the part before `@` in its SSH
     target (`rpi1@...` → label `rpi1`), so a workflow can target one
     specific Pi with `runs-on: [self-hosted, rpi1]`. Give it an explicit

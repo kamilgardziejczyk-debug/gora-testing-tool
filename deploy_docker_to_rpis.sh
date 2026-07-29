@@ -23,8 +23,11 @@ set -euo pipefail
 #   GH_PAT     (required) GitHub PAT used to mint each node's runner
 #              registration token. Needs "Administration" write access on
 #              GH_REPO (fine-grained PAT) or the classic `repo` scope.
-#   GH_REPO    (optional) "owner/repo" to register runners against. Defaults
-#              to this repo's own `origin` remote.
+#   GH_REPO    (optional) "owner/repo" to register runners against. A runner
+#              only sees workflows defined in that repo, so this should
+#              normally be set to whichever repo's commits should trigger a
+#              run (e.g. a firmware repo like gora-gateway), not left to its
+#              default of this repo's own `origin` remote.
 #   TZ         (optional) Passed into each container so its HTML reports use
 #              local timestamps. Defaults to UTC.
 #   EXTRA_DOCKER_RUN_ARGS (optional) Extra flags appended to every node's

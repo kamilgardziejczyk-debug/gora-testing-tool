@@ -3,8 +3,8 @@
 # Gora testing tool - HIL test node image.
 #
 # Targets a Raspberry Pi 4 test node (linux/arm64). This layer covers the GPIO
-# (!GpioControl), serial (!ProgramEsptool, !SubghzSim) and BLE (!BleCentral)
-# scenarios; J-Link and MQTT support are added in later steps.
+# (!GpioControl), serial (!ProgramEsptool, !SubghzSim), BLE (!BleCentral) and
+# J-Link (!ProgramJlink) scenarios; MQTT support is added in a later step.
 #
 # Python is pinned at 3.11 because the codebase uses PEP 604 unions in
 # evaluated positions - e.g. `-> Wrapper | None` in parser/parser.py - which
@@ -92,6 +92,29 @@ RUN mkdir -p /opt/actions-runner \
 # The runner refuses to run as root unless told to; this container already
 # runs as root for the gpio/dialout reasons below, so opt in explicitly.
 ENV RUNNER_ALLOW_RUNASROOT=1
+
+# SEGGER J-Link tools (JLinkExe, used by !ProgramJlink). Fetched unversioned
+# from SEGGER's own "latest" URL - the vendor doesn't publish a stable
+# versioned URL for arm64, so a rebuild can pick up a newer J-Link release;
+# `dpkg -s jlink` inside the container shows exactly which one landed.
+# `-d accept_license_agreement=accepted` is SEGGER's documented way to skip
+# the interactive EULA click-through for scripted installs.
+#
+# The .deb's postinst reloads udev rules via udevadm to pick up already-
+# connected probes; udevadm doesn't exist in this slim image (no udev
+# daemon), so the real call would fail the whole install. Devices instead
+# reach the container via `-v /dev/bus/usb:/dev/bus/usb --privileged` (see
+# README), so nothing here actually depends on live udev rule reloading -
+# a no-op stub is enough to let the install finish.
+RUN echo '#!/bin/sh' > /usr/bin/udevadm \
+    && echo 'exit 0' >> /usr/bin/udevadm \
+    && chmod +x /usr/bin/udevadm \
+    && curl -fsSL -o /tmp/jlink.deb -d accept_license_agreement=accepted \
+        https://www.segger.com/downloads/jlink/JLink_Linux_arm64.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/jlink.deb \
+    && rm -f /tmp/jlink.deb \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
