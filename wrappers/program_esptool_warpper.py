@@ -42,6 +42,8 @@ class ProgramEsptoolWarpper(Wrapper):
                 self.port = value_node.value
             elif key == "baudrate":
                 self.baudrate = int(value_node.value)
+            elif key == "firmware_dir":
+                self.firmware_dir = value_node.value
             elif key == "bootloader":
                 self.bootloader = value_node.value
             elif key == "partition_table":
@@ -50,10 +52,12 @@ class ProgramEsptoolWarpper(Wrapper):
                 self.firmware = value_node.value
 
         LOGGER.info(
-            "Parsed ProgramEsptool values: name=%s, port=%s, baudrate=%s, bootloader=%s, partition_table=%s, firmware=%s",
+            "Parsed ProgramEsptool values: name=%s, port=%s, baudrate=%s, firmware_dir=%s, bootloader=%s, "
+            "partition_table=%s, firmware=%s",
             self.name,
             self.port,
             self.baudrate,
+            self.firmware_dir,
             self.bootloader,
             self.partition_table,
             self.firmware,

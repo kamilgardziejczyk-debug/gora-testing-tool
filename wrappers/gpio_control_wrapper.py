@@ -15,6 +15,14 @@ from .wrapper import Wrapper
 
 LOGGER = logging.getLogger(__name__)
 
+# Module-level state tracking which BCM pins have already been configured with
+# GPIO.setup(), so repeated commands on the same pin within a scenario don't
+# re-trigger "channel already in use" warnings. Wrappers are re-instantiated
+# per command by the Parser, which has no way to share state between them, so
+# this mirrors the same rendezvous-through-module pattern used by
+# mqtt_registry for the same reason.
+_configured_pins: set[int] = set()
+
 
 class GpioControlWrapper(Wrapper):
     def __init__(self, command_node: yaml.MappingNode):
@@ -57,8 +65,24 @@ class GpioControlWrapper(Wrapper):
             return
 
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.pin, GPIO.OUT)
+        if self.pin not in _configured_pins:
+            GPIO.setup(self.pin, GPIO.OUT)
+            _configured_pins.add(self.pin)
 
         level = GPIO.HIGH if self.state else GPIO.LOW
         GPIO.output(self.pin, level)
         LOGGER.info("GPIO pin %s set to %s", self.pin, "HIGH" if self.state else "LOW")
+
+
+def cleanup_all() -> None:
+    """Release every pin configured by a !GpioControl command this scenario.
+
+    Called from the scenario runner's `finally`, so a command that raises
+    part-way through still leaves the pins released cleanly. Safe to call
+    when none are configured, or when RPi.GPIO isn't available.
+    """
+    if GPIO is None or not _configured_pins:
+        return
+    LOGGER.info("Releasing GPIO pins: %s", sorted(_configured_pins))
+    GPIO.cleanup()
+    _configured_pins.clear()

@@ -14,6 +14,7 @@ class ExecuteCommandWrapper(Wrapper):
         self.command_node = command_node
         self.name: str | None = None
         self.command: str | None = None
+        self.timeout_s: float | None = None
 
     def parse(self) -> None:
         tag_name = self.command_node.tag.lstrip("!").rstrip(":")
@@ -29,12 +30,20 @@ class ExecuteCommandWrapper(Wrapper):
                 self.name = value_node.value
             elif key == "command":
                 self.command = value_node.value
+            elif key == "timeout_s":
+                self.timeout_s = float(value_node.value)
 
         if not self.command:
             raise ValueError("ExecuteCommand: 'command' field is required")
 
-        LOGGER.info("Parsed ExecuteCommand: name=%s, command=%s", self.name, self.command)
+        LOGGER.info(
+            "Parsed ExecuteCommand: name=%s, command=%s, timeout_s=%s", self.name, self.command, self.timeout_s
+        )
 
     def execute(self) -> None:
         LOGGER.info("Executing command: %s", self.command)
-        subprocess.run(self.command, shell=True, check=True)
+        try:
+            subprocess.run(self.command, shell=True, check=True, timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            LOGGER.error("Command timed out after %s second(s): %s", self.timeout_s, self.command)
+            raise

@@ -11,13 +11,13 @@ commands:
     iterations: 5
     commands:
 
-    - GpioControl:
+    - !GpioControl:
       name: "Power Off"
       state: false
       pin: 17
       wait_after_s: 1
 
-    - GpioControl:
+    - !GpioControl:
       name: "Power On"
       state: true
       pin: 17

@@ -70,14 +70,17 @@ Programs a microcontroller using SEGGER J-Link Commander (`JLinkExe`/`JLink.exe`
 *   `device`: (Required) MCU device name (e.g. `RW612` for NXP RW612, `STM32F407VE`).
 *   `interface`: (Optional) Debug interface (`SWD`, `JTAG`). Defaults to `SWD`.
 *   `speed`: (Optional) Connection clock speed in kHz. Defaults to `4000`.
+*   `firmware_dir`: (Required if not overridden via `-f` / `--firmware`) Directory containing the firmware binary. A CLI `-f`/`--firmware` value overrides this.
 *   `firmware`: (Required) Filename of the binary to flash.
 *   `address`: (Required for `.bin` / raw files) The load address (e.g., `0x18000000`). Automatically omitted for `.hex` and `.elf` files since J-Link automatically parses internal addresses.
+*   `timeout_s`: (Optional) Kill `JLinkExe`/`JLink.exe` and fail the step if it doesn't finish within this many seconds. Defaults to no timeout.
 
 ### `!ProgramEsptool` (or `!ProgrammEsptool`)
 Flashes an ESP32 microcontroller using the `esptool` library.
 *   `name`: (Optional) Descriptive log name.
 *   `port`: (Required if not overridden via `-p` / `--port`) Destination serial port.
 *   `baudrate`: (Optional) Upload baudrate. Defaults to `460800`.
+*   `firmware_dir`: (Required if not overridden via `-f` / `--firmware`) Directory containing the firmware binaries. A CLI `-f`/`--firmware` value overrides this.
 *   `bootloader`: (Required) Bootloader filename.
 *   `partition_table`: (Required) Partition table filename.
 *   `firmware`: (Required) App firmware filename.
@@ -99,6 +102,7 @@ Placeholder wrapper for manipulating a physical USB switch hardware component.
 Runs a host terminal command using shell execution.
 *   `name`: (Optional) Descriptive log name.
 *   `command`: (Required) The bash command string.
+*   `timeout_s`: (Optional) Kill the command and fail the step if it doesn't finish within this many seconds. Defaults to no timeout.
 *   `wait_after_s`: (Optional) Wait time in seconds after command execution.
 
 ### `!SubghzSim`
@@ -229,3 +233,66 @@ Runs nested scenario commands sequentially multiple times.
 *   `name`: (Optional) Descriptive log name.
 *   `iterations`: (Required) Number of loop iterations.
 *   `commands`: (Required) A list of nested scenario commands.
+
+---
+
+## 4. TODO — Known Issues and Cleanup
+
+Findings from a source scan of the whole codebase. Ordered by severity; each entry names the file so it can be picked up independently. Nothing here is fixed yet.
+
+### 4.1 Bugs and correctness
+
+*   **`esp._port.close()` reaches into esptool's internals** — `program_esptool_warpper.py:107`. Private attribute; will break silently on an esptool refactor. (The public API used elsewhere in that file — `detect_chip`, `run_stub`, `write_flash` — is fine on the installed 5.3.1.)
+*   **`!BleCentral` `attempts` retries writes** — `ble_central_wrapper.py:445`. Retrying a *read* is idempotent; retrying a `write` is not. A reset-trigger characteristic that times out after the device already acted would be written twice. Consider restricting `attempts` to `read`/`notify`, or documenting that writes must be idempotent to use it.
+*   **Retries don't reconnect** — `ble_central_wrapper.py:445`. `attempts` re-runs the action on the same `BleCentral`; if the *link* dropped, every remaining action fails `attempts` times with `retry_wait_ms` between each, turning one disconnect into a long slow cascade instead of one clear error.
+
+### 4.2 Inconsistencies
+
+*   **`Warpper` typo in three class and file names** — `program_esptool_warpper.py`, `program_jlink_warpper.py`, `usb_switch_warpper.py` (classes `ProgramEsptoolWarpper`, `ProgramJlinkWarpper`, `UsbSwitchWarpper`) against `Wrapper` everywhere else. Renaming touches `wrappers/__init__.py`, `parser/parser.py`'s map, and `main.py`'s `isinstance` chain.
+*   **Two different validation timings** — the esptool and J-Link wrappers validate required fields in `execute()`; every other wrapper validates in `parse()`. Parse-time validation is the convention worth keeping: it rejects a bad scenario before any hardware is touched.
+*   **Two different philosophies for bad input** — `subghz_sim_wrapper.py:116` warns and skips an action with no recognised verb, while `ble_central_wrapper.py:206` raises. Pick one (raising is safer for a test tool) and apply it in both, plus the parser (4.1).
+*   **`scenario_dir` is honoured by exactly one wrapper** — `mqtt_subscribe_wrapper.py:145`. Certificate paths resolve relative to the scenario file; firmware directories, the `!SubghzSim` serial port, and everything else do not. Either resolve consistently or document that only certs are relative.
+*   **README documents two tag aliases that do not work** — `!ProgramEsptool` "(or `!ProgrammEsptool`)" and `!GpioControl` "(or `GpioControl`)". The `ProgrammEsptool` spelling is accepted inside `parse()` but absent from `WRAPPER_BY_TAG`, so it is unreachable; the bare `GpioControl` form (no `!`) is a plain mapping and is silently dropped. Fix the docs or the code — the bare-form claim is what `test.yml` was written against. (`!ExecuteCommand:` with the trailing colon genuinely does work — `rstrip(":")` handles it.)
+*   **Empty values are accepted for one encoding only** — `tools/ble_gatt/values.py:30`. `encode_value("", "utf8")` returns `b""` and writes a zero-length characteristic; `hex` rejects it ("hex value is empty") and `uint*` rejects it ("not an integer"). Decide whether an empty write is legal and make all three agree.
+*   **Dependencies are declared in four places** — `requirements.txt` plus `tools/{ble_gatt,mqtt_listener,subghz_sim}/requirements.txt`, with the per-tool files duplicating root entries. They will drift.
+*   **`RPi.GPIO` is a hard dependency** — `requirements.txt:2` — even though `gpio_control_wrapper.py:3` explicitly handles it being missing and falls back to simulation. On a non-Pi host `pip install -r requirements.txt` can fail outright. Belongs in an optional extra.
+*   **Report durations are formatted in two different places** — `reporting/report.py:49` pre-formats the total to a string in Python while `templates/report.html.j2` formats each row with `"%.2f"|format`. Pick one layer.
+
+### 4.3 Dead and unused code
+
+*   **`ProgrammEsptool` branch is unreachable** — `program_esptool_warpper.py:31` accepts the misspelling, but the tag is not in `WRAPPER_BY_TAG`, so no scenario can reach it.
+*   **`!UsbSwitch` does nothing** — `usb_switch_warpper.py:39`. `execute()` only logs; the tag is documented and parseable but has no implementation. Either implement it or mark it clearly as a stub in the README.
+*   **`UsbSwitchWarpper.parse()` round-trips through a throwaway dict** — `usb_switch_warpper.py:22-34`. It fills a `values` dict, then converts back out with `str()`/`bool()` guards, where every other wrapper assigns directly. It also never validates that `state` was supplied.
+*   **Dead `except` branch in the BLE REPL** — `tools/ble_gatt/cli.py:53-58`. `DeviceNotFound` is a subclass of `ConnectionError` and both branches have identical bodies, so the first can go.
+*   **Redundant exception in the retry tuple** — `ble_central_wrapper.py:456`. `ConnectionError` is already covered by `IOError` (an alias of `OSError`) in the same `except`.
+*   **`poll_characteristic()` has no callers** — `tools/ble_gatt/central.py:349`. It was the wrapper's polling mechanism before `read` + `attempts` replaced it. Still reachable from the Python API and documented in the tool README — decide whether to keep it as public API or drop it.
+*   **`main.py` imports a submodule the package doesn't export** — `from wrappers import mqtt_registry` works only because `mqtt_subscribe_wrapper` happens to `from . import mqtt_registry` first. Add it to `wrappers/__init__.py` explicitly.
+
+### 4.4 Complexity
+
+The project standard is functions ≤ 50 lines. Current offenders:
+
+| Lines | Location | Notes |
+| --- | --- | --- |
+| 91 | `parser/parser.py:51` `parse()` | Five nested closures re-defined on every call |
+| 71 | `program_jlink_warpper.py:66` `execute()` | Validation + script generation + tempfile + subprocess + cleanup in one body |
+| 58 / 55 / 54 | `ble_central_wrapper.py` `_parse_notify()` / `_parse_read()` / `_parse_write()` | Near-identical key-loop → validate → construct; a shared field-spec table would collapse all three |
+| 46 | `program_esptool_warpper.py:62` `execute()` | |
+| 46 | `mqtt_subscribe_wrapper.py:47` `parse()` | |
+| 46 | `ble_central_wrapper.py:127` `parse()` | |
+| 42 | `tools/ble_gatt/central.py:424` `_find_characteristic()` | |
+| 41 | `mqtt_expect_wrapper.py:151` `execute()` | |
+
+Also worth restructuring:
+
+*   **`wrappers/ble_central_wrapper.py` is 541 lines** — the largest file in the project, and roughly a third of it is the three duplicated `_parse_*` methods above.
+*   **Every wrapper hand-rolls the same YAML key loop** — `for key_node, value_node in node.value:` + `isinstance` guards + an `elif` chain, repeated in all ten wrappers. A small declarative field-spec helper (name, type, required, default) would remove most of the parsing code and make required-field validation uniform (see 4.2).
+*   **The scenario file is read twice** — `parser/parser.py:44` in `validate()` and `:52` in `parse()`. Compose once and reuse.
+*   **`apply_cli_overrides()` is an `isinstance` chain** — `main.py:62`. Every new flashing wrapper needs an edit here; a `port`/`firmware_dir` capability marker on the wrapper base class would invert the dependency.
+*   **Two unrelated types both named `Action`** — `subghz_sim_wrapper.Action` (a `NamedTuple`) and `ble_central_wrapper.Action` (a `Union` alias). They don't collide, but they read as the same concept.
+
+### 4.5 Missing infrastructure
+
+*   **No automated tests.** Everything so far has been verified with throwaway scripts against stubs and pty pairs. The pure logic is easy to cover now and would have caught several items above: `parser` tag resolution and `!Loop` expansion, `values.encode_value` / `uuids.normalize_uuid`, `subghz_sim.frame` CRC and encoding, `mqtt_expect` operator/early-exit table, and the BLE `attempts` retry loop — all with no hardware.
+*   **No linter or formatter config.** No `ruff`/`flake8`/`black` setup, so the ≤50-line and PEP 8 standards are unenforced (see 4.4).
+*   **No CI.** Nothing runs the above on a push.

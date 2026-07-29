@@ -7,7 +7,7 @@ from pathlib import Path
 
 from parser import Parser
 from reporting import TestResult, generate_report
-from wrappers import ProgramEsptoolWarpper, ProgramJlinkWarpper, Wrapper, mqtt_registry
+from wrappers import ProgramEsptoolWarpper, ProgramJlinkWarpper, Wrapper, gpio_cleanup_all, mqtt_registry
 
 
 LOGGER = logging.getLogger(__name__)
@@ -136,25 +136,30 @@ def run_scenario(wrappers: list[Wrapper], scenario_path: Path, report_path: Path
     results: list[TestResult] = []
     failure: Exception | None = None
 
-    for wrapper in wrappers:
-        result, failure = run_wrapper(wrapper)
-        results.append(result)
-        if failure is not None:
-            LOGGER.error("%s failed, stopping scenario: %s", type(wrapper).__name__, failure)
-            break
-        if wrapper.wait_after_s is not None:
-            LOGGER.info("Waiting %s second(s) after %s", wrapper.wait_after_s, type(wrapper).__name__)
-            time.sleep(wrapper.wait_after_s)
-    else:
-        LOGGER.info("Scenario execution finished")
+    try:
+        for wrapper in wrappers:
+            result, failure = run_wrapper(wrapper)
+            results.append(result)
+            if failure is not None:
+                LOGGER.error("%s failed, stopping scenario: %s", type(wrapper).__name__, failure)
+                break
+            if wrapper.wait_after_s is not None:
+                LOGGER.info("Waiting %s second(s) after %s", wrapper.wait_after_s, type(wrapper).__name__)
+                time.sleep(wrapper.wait_after_s)
+        else:
+            LOGGER.info("Scenario execution finished")
+    finally:
+        # A command that raises part-way through - including a KeyboardInterrupt
+        # during execute() or the wait_after_s sleep - must still leave the
+        # broker connections closed, GPIO pins released, and a report written,
+        # or the client id stays taken by an orphan, pins stay driven, and the
+        # run leaves no record.
+        mqtt_registry.close_all()
+        gpio_cleanup_all()
 
-    # A command that raises part-way through must still leave the broker
-    # connections closed, or the client id stays taken by an orphan.
-    mqtt_registry.close_all()
-
-    total_duration_s = time.monotonic() - wall_start
-    generate_report(scenario_path, started_at, total_duration_s, results, report_path)
-    LOGGER.info("Wrote test report to %s", report_path)
+        total_duration_s = time.monotonic() - wall_start
+        generate_report(scenario_path, started_at, total_duration_s, results, report_path)
+        LOGGER.info("Wrote test report to %s", report_path)
 
     if failure is not None:
         raise failure

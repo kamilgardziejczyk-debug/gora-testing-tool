@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-## Code standards
-
 - Python 3.8+ with type hints on all function signatures.
 - PEP 8; functions ≤ 50 lines.
 - Docstrings on all public functions and classes.

@@ -29,6 +29,7 @@ class ProgramJlinkWarpper(Wrapper):
         self.firmware_dir: str | None = None
         self.firmware: str | None = None
         self.address: str | None = None
+        self.timeout_s: float | None = None
 
     def parse(self) -> None:
         tag_name = self.command_node.tag.lstrip("!").rstrip(":")
@@ -48,19 +49,26 @@ class ProgramJlinkWarpper(Wrapper):
                 self.interface = value_node.value
             elif key == "speed":
                 self.speed = int(value_node.value)
+            elif key == "firmware_dir":
+                self.firmware_dir = value_node.value
             elif key == "firmware":
                 self.firmware = value_node.value
             elif key == "address":
                 self.address = value_node.value
+            elif key == "timeout_s":
+                self.timeout_s = float(value_node.value)
 
         LOGGER.info(
-            "Parsed ProgramJlink values: name=%s, device=%s, interface=%s, speed=%d, firmware=%s, address=%s",
+            "Parsed ProgramJlink values: name=%s, device=%s, interface=%s, speed=%d, firmware_dir=%s, "
+            "firmware=%s, address=%s, timeout_s=%s",
             self.name,
             self.device,
             self.interface,
             self.speed,
+            self.firmware_dir,
             self.firmware,
             self.address,
+            self.timeout_s,
         )
 
     def execute(self) -> None:
@@ -122,10 +130,15 @@ class ProgramJlinkWarpper(Wrapper):
         LOGGER.info("Executing: %s", " ".join(cmd))
 
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=self.timeout_s)
             LOGGER.info("J-Link Execution successful:\n%s", result.stdout)
         except subprocess.CalledProcessError as e:
             LOGGER.error("J-Link command failed with exit code %d", e.returncode)
+            LOGGER.error("J-Link stdout:\n%s", e.stdout)
+            LOGGER.error("J-Link stderr:\n%s", e.stderr)
+            raise
+        except subprocess.TimeoutExpired as e:
+            LOGGER.error("J-Link command timed out after %s second(s)", self.timeout_s)
             LOGGER.error("J-Link stdout:\n%s", e.stdout)
             LOGGER.error("J-Link stderr:\n%s", e.stderr)
             raise

@@ -77,6 +77,16 @@ class Parser:
             command_tag = command_node.tag.lstrip("!").rstrip(":")
             wrapper_class = WRAPPER_BY_TAG.get(command_tag)
             if wrapper_class is None:
+                tag_description = (
+                    "no tag - check for a missing leading '!'"
+                    if command_node.tag == "tag:yaml.org,2002:map"
+                    else f"unrecognised tag {command_tag!r} - check for a typo"
+                )
+                LOGGER.warning(
+                    "Skipping command with %s: %s",
+                    tag_description,
+                    document_text[command_node.start_mark.index:command_node.end_mark.index].strip(),
+                )
                 return None
 
             LOGGER.info("Parsing wrapper for tag: %s", command_tag)
