@@ -1,7 +1,7 @@
 import logging
 import operator as operator_module
 import time
-from typing import NamedTuple, Union
+from typing import Callable, NamedTuple, Union
 
 import yaml
 
@@ -98,7 +98,34 @@ class NotifyAction(NamedTuple):
     retry_wait_ms: int
 
 
-Action = Union[WriteAction, ReadAction, NotifyAction]
+BleAction = Union[WriteAction, ReadAction, NotifyAction]
+
+FieldSpecs = dict[str, tuple[Callable[[str], object], object]]
+
+
+def _parse_response_flag(text: str) -> bool:
+    return text.strip().lower() not in ("false", "no", "0")
+
+
+def _extract_fields(node: yaml.MappingNode, specs: FieldSpecs) -> dict[str, object]:
+    """Extract and type-convert a mapping's scalar fields per `specs`.
+
+    `specs` maps a YAML key to `(converter, default)`. Every declared key
+    starts at its default; a present key is overwritten by
+    `converter(value_node.value)`. Keys not in `specs` are ignored, matching
+    every action type's existing silent-skip-of-unknown-keys behavior.
+    Shared by `_parse_write`/`_parse_read`/`_parse_notify`, which otherwise
+    repeat this same key-loop for a near-identical set of fields.
+    """
+    values = {key: default for key, (_, default) in specs.items()}
+    for key_node, value_node in node.value:
+        if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
+            continue
+        key = key_node.value
+        if key in specs:
+            converter, _ = specs[key]
+            values[key] = converter(value_node.value)
+    return values
 
 
 class BleCentralWrapper(Wrapper):
@@ -172,7 +199,7 @@ class BleCentralWrapper(Wrapper):
         )
 
     def _parse_actions(self, actions_node) -> list:
-        """Build one Action per entry, encoding every value up front.
+        """Build one BleAction per entry, encoding every value up front.
 
         Encoding at parse time means a bad UUID or an unencodable value fails
         before the radio is touched, rather than half-way through a sequence
@@ -185,7 +212,7 @@ class BleCentralWrapper(Wrapper):
 
         return [self._parse_action(entry_node, index) for index, entry_node in enumerate(actions_node.value)]
 
-    def _parse_action(self, entry_node: yaml.Node, index: int) -> Action:
+    def _parse_action(self, entry_node: yaml.Node, index: int) -> BleAction:
         """Find the one verb key an action entry must have, and dispatch to it."""
         if not isinstance(entry_node, yaml.MappingNode):
             raise ValueError(f"BleCentral: action #{index + 1} must be a mapping")
@@ -225,38 +252,23 @@ class BleCentralWrapper(Wrapper):
             raise ValueError(f"BleCentral: {label} retry_wait_ms must be >= 0, got {retry_wait_ms}")
         return attempts, retry_wait_ms
 
+    def _resolve_service(self, label: str, service: object) -> str | None:
+        """A field-level `service` overrides the command-level default, once normalized."""
+        return self._normalize(f"{label} service", service) if service else self.service
+
     def _parse_write(self, node: yaml.MappingNode, label: str) -> WriteAction:
-        uuid = None
-        value = None
-        encoding = DEFAULT_ENCODING
-        service_uuid = self.service
-        response = True
-        wait_after_ms = None
-        attempts = None
-        retry_wait_ms = None
+        fields = _extract_fields(node, {
+            "uuid": (str, None),
+            "value": (str, None),
+            "encoding": (str, DEFAULT_ENCODING),
+            "service": (str, None),
+            "response": (_parse_response_flag, True),
+            "wait_after_ms": (int, None),
+            "attempts": (int, None),
+            "retry_wait_ms": (int, None),
+        })
 
-        for key_node, value_node in node.value:
-            if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
-                continue
-
-            key = key_node.value
-            if key == "uuid":
-                uuid = value_node.value
-            elif key == "value":
-                value = value_node.value
-            elif key == "encoding":
-                encoding = value_node.value
-            elif key == "service":
-                service_uuid = self._normalize(f"{label} service", value_node.value)
-            elif key == "response":
-                response = value_node.value.strip().lower() not in ("false", "no", "0")
-            elif key == "wait_after_ms":
-                wait_after_ms = int(value_node.value)
-            elif key == "attempts":
-                attempts = int(value_node.value)
-            elif key == "retry_wait_ms":
-                retry_wait_ms = int(value_node.value)
-
+        uuid, value, encoding = fields["uuid"], fields["value"], fields["encoding"]
         if uuid is None:
             raise ValueError(f"BleCentral: {label} is missing its 'uuid' field")
         if value is None:
@@ -267,7 +279,7 @@ class BleCentralWrapper(Wrapper):
         except ValueError as error:
             raise ValueError(f"BleCentral: {label} ({uuid}) has an invalid value: {error}") from None
 
-        attempts, retry_wait_ms = self._parse_retry_fields(label, attempts, retry_wait_ms)
+        attempts, retry_wait_ms = self._parse_retry_fields(label, fields["attempts"], fields["retry_wait_ms"])
         if attempts > 1:
             raise ValueError(
                 f"BleCentral: {label} ({uuid}) sets attempts={attempts}, but writes cannot be retried safely - "
@@ -280,101 +292,65 @@ class BleCentralWrapper(Wrapper):
             value=encoded,
             raw_value=value,
             encoding=encoding,
-            service_uuid=service_uuid,
-            response=response,
-            wait_after_ms=wait_after_ms,
+            service_uuid=self._resolve_service(label, fields["service"]),
+            response=fields["response"],
+            wait_after_ms=fields["wait_after_ms"],
             attempts=attempts,
             retry_wait_ms=retry_wait_ms,
         )
 
     def _parse_read(self, node: yaml.MappingNode, label: str) -> ReadAction:
-        uuid = None
-        validation = None
-        encoding = DEFAULT_ENCODING
-        service_uuid = self.service
-        wait_after_ms = None
-        attempts = None
-        retry_wait_ms = None
+        fields = _extract_fields(node, {
+            "uuid": (str, None),
+            "validation": (str, None),
+            "encoding": (str, DEFAULT_ENCODING),
+            "service": (str, None),
+            "wait_after_ms": (int, None),
+            "attempts": (int, None),
+            "retry_wait_ms": (int, None),
+        })
 
-        for key_node, value_node in node.value:
-            if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
-                continue
-
-            key = key_node.value
-            if key == "uuid":
-                uuid = value_node.value
-            elif key == "validation":
-                validation = value_node.value
-            elif key == "encoding":
-                encoding = value_node.value
-            elif key == "service":
-                service_uuid = self._normalize(f"{label} service", value_node.value)
-            elif key == "wait_after_ms":
-                wait_after_ms = int(value_node.value)
-            elif key == "attempts":
-                attempts = int(value_node.value)
-            elif key == "retry_wait_ms":
-                retry_wait_ms = int(value_node.value)
-
+        uuid, encoding = fields["uuid"], fields["encoding"]
         if uuid is None:
             raise ValueError(f"BleCentral: {label} is missing its 'uuid' field")
 
         operator = None
         expected = None
         raw_value = None
-        if validation is not None:
-            operator, literal = self._parse_value_validation(label, validation)
+        if fields["validation"] is not None:
+            operator, literal = self._parse_value_validation(label, fields["validation"])
             try:
                 expected = encode_value(literal, encoding)
             except ValueError as error:
                 raise ValueError(f"BleCentral: {label} ({uuid}) has an invalid value: {error}") from None
             raw_value = literal
 
-        attempts, retry_wait_ms = self._parse_retry_fields(label, attempts, retry_wait_ms)
+        attempts, retry_wait_ms = self._parse_retry_fields(label, fields["attempts"], fields["retry_wait_ms"])
         return ReadAction(
             uuid=self._normalize(f"{label} uuid", uuid),
             operator=operator,
             expected_value=expected,
             raw_value=raw_value,
             encoding=encoding,
-            service_uuid=service_uuid,
-            wait_after_ms=wait_after_ms,
+            service_uuid=self._resolve_service(label, fields["service"]),
+            wait_after_ms=fields["wait_after_ms"],
             attempts=attempts,
             retry_wait_ms=retry_wait_ms,
         )
 
     def _parse_notify(self, node: yaml.MappingNode, label: str) -> NotifyAction:
-        uuid = None
-        validation = None
-        encoding = DEFAULT_ENCODING
-        service_uuid = self.service
-        timeout_s = DEFAULT_NOTIFY_TIMEOUT_S
-        wait_after_ms = None
-        attempts = None
-        retry_wait_ms = None
+        fields = _extract_fields(node, {
+            "uuid": (str, None),
+            "validation": (str, None),
+            "encoding": (str, DEFAULT_ENCODING),
+            "service": (str, None),
+            "timeout_s": (float, DEFAULT_NOTIFY_TIMEOUT_S),
+            "wait_after_ms": (int, None),
+            "attempts": (int, None),
+            "retry_wait_ms": (int, None),
+        })
 
-        for key_node, value_node in node.value:
-            if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
-                continue
-
-            key = key_node.value
-            if key == "uuid":
-                uuid = value_node.value
-            elif key == "validation":
-                validation = value_node.value
-            elif key == "encoding":
-                encoding = value_node.value
-            elif key == "service":
-                service_uuid = self._normalize(f"{label} service", value_node.value)
-            elif key == "timeout_s":
-                timeout_s = float(value_node.value)
-            elif key == "wait_after_ms":
-                wait_after_ms = int(value_node.value)
-            elif key == "attempts":
-                attempts = int(value_node.value)
-            elif key == "retry_wait_ms":
-                retry_wait_ms = int(value_node.value)
-
+        uuid, validation, encoding, timeout_s = fields["uuid"], fields["validation"], fields["encoding"], fields["timeout_s"]
         if uuid is None:
             raise ValueError(f"BleCentral: {label} is missing its 'uuid' field")
         if validation is None:
@@ -388,16 +364,16 @@ class BleCentralWrapper(Wrapper):
         except ValueError as error:
             raise ValueError(f"BleCentral: {label} ({uuid}) has an invalid value: {error}") from None
 
-        attempts, retry_wait_ms = self._parse_retry_fields(label, attempts, retry_wait_ms)
+        attempts, retry_wait_ms = self._parse_retry_fields(label, fields["attempts"], fields["retry_wait_ms"])
         return NotifyAction(
             uuid=self._normalize(f"{label} uuid", uuid),
             operator=operator,
             expected_value=encoded,
             raw_value=literal,
             encoding=encoding,
-            service_uuid=service_uuid,
+            service_uuid=self._resolve_service(label, fields["service"]),
             timeout_s=timeout_s,
-            wait_after_ms=wait_after_ms,
+            wait_after_ms=fields["wait_after_ms"],
             attempts=attempts,
             retry_wait_ms=retry_wait_ms,
         )
@@ -449,7 +425,7 @@ class BleCentralWrapper(Wrapper):
 
         LOGGER.info("BleCentral: completed %d action(s) on '%s'", len(self.actions), self.device)
 
-    def _run_action(self, central: BleCentral, action: Action) -> None:
+    def _run_action(self, central: BleCentral, action: BleAction) -> None:
         """Run one action, retrying it up to `action.attempts` times.
 
         Every action type carries its own `attempts`/`retry_wait_ms`, so this
@@ -496,7 +472,7 @@ class BleCentralWrapper(Wrapper):
                     LOGGER.info("BleCentral: succeeded on attempt %d/%d", attempt, action.attempts)
                 return
 
-    def _execute_action(self, central: BleCentral, action: Action) -> None:
+    def _execute_action(self, central: BleCentral, action: BleAction) -> None:
         if isinstance(action, WriteAction):
             self._run_write(central, action)
         elif isinstance(action, ReadAction):

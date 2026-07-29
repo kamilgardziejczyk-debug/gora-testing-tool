@@ -33,6 +33,13 @@ class Wrapper(ABC):
     validation_expected: str | None = None
     validation_actual: str | None = None
 
+    # Capability markers `apply_cli_overrides()` checks instead of an isinstance
+    # chain, so a new flashing wrapper opts in here without main.py needing an
+    # edit for it. A wrapper declaring one must define the matching attribute
+    # (`port` / `firmware_dir`) for the override to actually have somewhere to go.
+    supports_port_override: bool = False
+    supports_firmware_dir_override: bool = False
+
     @abstractmethod
     def parse(self) -> None:
         pass

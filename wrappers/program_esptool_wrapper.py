@@ -16,6 +16,9 @@ FIRMWARE_FLASH_ADDRESS = 0x10000
 
 
 class ProgramEsptoolWrapper(Wrapper):
+    supports_port_override = True
+    supports_firmware_dir_override = True
+
     def __init__(self, command_node: yaml.MappingNode):
         self.command_node = command_node
         self.name: str | None = None

@@ -97,11 +97,28 @@ def _expand_commands(commands_node: yaml.SequenceNode) -> list[yaml.Node]:
 class Parser:
     def __init__(self, file_path: str):
         self.file_path = Path(file_path)
+        self._document_text: str | None = None
+        self._document: yaml.Node | None = None
+        self._loaded = False
+
+    def _load(self) -> tuple[str, yaml.Node | None]:
+        """Read and compose the scenario file once, caching the result.
+
+        Shared by `validate()` and `parse()` so a scenario file is never read
+        from disk (or composed) twice in one run. Only cached on success: if
+        `yaml.compose()` raises, the next call retries from scratch instead of
+        silently replaying the failure as an empty document.
+        """
+        if not self._loaded:
+            document_text = self.file_path.read_text(encoding="utf-8")
+            document = yaml.compose(document_text)
+            self._document_text, self._document, self._loaded = document_text, document, True
+        return self._document_text, self._document
 
     def validate(self) -> bool:
         LOGGER.info("Validating YAML file: %s", self.file_path)
         try:
-            yaml.compose(self.file_path.read_text(encoding="utf-8"))
+            self._load()
             LOGGER.info("YAML file is valid")
             return True
         except yaml.YAMLError:
@@ -109,8 +126,7 @@ class Parser:
             return False
 
     def parse(self) -> list[Wrapper]:
-        document_text = self.file_path.read_text(encoding="utf-8")
-        document = yaml.compose(document_text)
+        document_text, document = self._load()
         if document is None:
             return []
 

@@ -20,6 +20,8 @@ class ProgramJlinkWrapper(Wrapper):
     Wrapper for programming devices using the SEGGER J-Link command-line tool.
     """
 
+    supports_firmware_dir_override = True
+
     def __init__(self, command_node: yaml.MappingNode):
         self.command_node = command_node
         self.name: str | None = None

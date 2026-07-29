@@ -21,7 +21,7 @@ LOGGER = logging.getLogger(__name__)
 ACTION_VERBS = {"add", "set", "del", "list"}
 
 
-class Action(NamedTuple):
+class SubghzAction(NamedTuple):
     """One simulator step, with its argument already validated at parse time.
 
     `arg` is kept verbatim only for logging, so the log still reads like the
@@ -49,7 +49,7 @@ class SubghzSimWrapper(Wrapper):
         self.baud: int = DEFAULT_BAUD
         self.interval_s: float = DEFAULT_INTERVAL_S
         self.duration_s: float | None = None
-        self.actions: list[Action] = []
+        self.actions: list[SubghzAction] = []
 
     def parse(self) -> None:
         tag_name = self.command_node.tag.lstrip("!").rstrip(":")
@@ -89,12 +89,12 @@ class SubghzSimWrapper(Wrapper):
             len(self.actions),
         )
 
-    def _parse_actions(self, actions_node: yaml.Node) -> list[Action]:
-        """Extract one Action per entry from a sequence of action mappings."""
+    def _parse_actions(self, actions_node: yaml.Node) -> list[SubghzAction]:
+        """Extract one SubghzAction per entry from a sequence of action mappings."""
         if not isinstance(actions_node, yaml.SequenceNode):
             return []
 
-        actions: list[Action] = []
+        actions: list[SubghzAction] = []
         for index, action_node in enumerate(actions_node.value):
             if not isinstance(action_node, yaml.MappingNode):
                 raise ValueError(f"SubghzSim: action #{index + 1} must be a mapping")
@@ -121,7 +121,7 @@ class SubghzSimWrapper(Wrapper):
 
         return actions
 
-    def _build_action(self, verb: str, arg: str, wait_after_ms: int | None) -> Action:
+    def _build_action(self, verb: str, arg: str, wait_after_ms: int | None) -> SubghzAction:
         """Validate one action's argument, so a typo fails before any hardware is touched.
 
         Field *names* can only be checked against a live sensor's type, so those
@@ -133,10 +133,10 @@ class SubghzSimWrapper(Wrapper):
             if type_name not in SENSOR_TYPES:
                 choices = ", ".join(sorted(set(SENSOR_TYPES)))
                 raise ValueError(f"SubghzSim: unknown sensor type '{arg}' (choices: {choices})")
-            return Action(verb, type_name, wait_after_ms)
+            return SubghzAction(verb, type_name, wait_after_ms)
 
         if verb == "del":
-            return Action(verb, arg, wait_after_ms, sensor_id=self._parse_id(verb, arg))
+            return SubghzAction(verb, arg, wait_after_ms, sensor_id=self._parse_id(verb, arg))
 
         if verb == "set":
             tokens = arg.split()
@@ -148,9 +148,9 @@ class SubghzSimWrapper(Wrapper):
                 fields = tuple(parse_field_pairs(tokens[1:]))
             except ValueError as error:
                 raise ValueError(f"SubghzSim: invalid 'set' action '{arg}': {error}") from error
-            return Action(verb, arg, wait_after_ms, self._parse_id(verb, tokens[0]), fields)
+            return SubghzAction(verb, arg, wait_after_ms, self._parse_id(verb, tokens[0]), fields)
 
-        return Action(verb, arg, wait_after_ms)
+        return SubghzAction(verb, arg, wait_after_ms)
 
     def _parse_id(self, verb: str, token: str) -> int:
         try:
@@ -175,7 +175,7 @@ class SubghzSimWrapper(Wrapper):
 
         LOGGER.info("subghz_sim session finished")
 
-    def _run_action(self, simulator: SubghzSimulator, action: Action) -> None:
+    def _run_action(self, simulator: SubghzSimulator, action: SubghzAction) -> None:
         """Run one action, reporting an unknown sensor id as a scenario error."""
         LOGGER.info("subghz_sim <- %s %s", action.verb, action.arg)
 
