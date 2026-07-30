@@ -61,13 +61,17 @@ ARG RUNNER_ARCH=arm64
 # tzdata lets `-e TZ=Europe/Dublin` give the HTML report local timestamps;
 # without it every report row is stamped UTC regardless of where the node is.
 # curl/jq/ca-certificates are for the runner tarball download below and for
-# entrypoint.sh's registration-token API calls at container start.
+# entrypoint.sh's registration-token API calls at container start. bluez
+# provides `bluetoothctl`, used by entrypoint.sh as a best-effort adapter
+# power-on - it only ever talks to the host's bluetoothd over the bind-
+# mounted D-Bus socket (see README), it doesn't run its own bluetoothd here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tzdata \
         curl \
         jq \
         ca-certificates \
         sudo \
+        bluez \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/venv \

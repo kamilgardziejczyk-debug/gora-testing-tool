@@ -107,6 +107,15 @@ docker run --rm \
     `--net=host` as a fallback — it should not normally be required.
 *   `adapter:` in the YAML (e.g. `hci0`) still refers to the host's adapter
     name, unchanged from running outside Docker.
+*   The adapter must be **powered on** on the host, or `!BleCentral` fails
+    fast with `No powered Bluetooth adapters found` before it ever scans.
+    `deploy_docker_to_rpis.sh` provisions each node so this survives reboots
+    (`AutoEnable=true` in `/etc/bluetooth/main.conf`, `rfkill unblock
+    bluetooth`), and the container also tries `bluetoothctl power on` itself
+    at startup as a best-effort fallback — but that fallback can't reach an
+    `rfkill`-blocked adapter (that needs host privileges the container
+    doesn't have), so a node set up outside that script may still need a
+    manual `rfkill unblock bluetooth && bluetoothctl power on` once.
 
 #### Running `!ProgramJlink` scenarios in Docker
 
@@ -249,6 +258,9 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
     otherwise they'd all derive the same label and fight over it.
 *   GPIO (`/dev/gpiomem`) and BLE (the D-Bus socket) are passed to every
     node by default, since every Pi 4 test node has both.
+*   It also provisions each node's Bluetooth adapter to auto-power on every
+    boot (skipped with a warning on a node with no `bluetoothctl` at all) —
+    see the note in the `!BleCentral` Docker section above.
 *   `EXTRA_DOCKER_RUN_ARGS` (optional): flags appended to every node's
     `docker run` for anything that *does* vary per node, e.g.
     `EXTRA_DOCKER_RUN_ARGS='--device /dev/ttyUSB0'` for serial scenarios —

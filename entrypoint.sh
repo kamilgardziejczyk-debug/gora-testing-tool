@@ -15,6 +15,19 @@ set -euo pipefail
 
 RUNNER_DIR="/opt/actions-runner"
 
+# Best-effort: power on the host's Bluetooth adapter for !BleCentral
+# scenarios, over the D-Bus socket bind-mounted per README - this container
+# never runs its own bluetoothd or touches the adapter directly. Skipped
+# entirely on a node with no D-Bus socket mounted (bluetoothctl aborts
+# outright with nothing to connect to, rather than failing quietly) or no
+# adapter at all, and it can't reach an rfkill-blocked adapter (that needs
+# host-side capabilities this container doesn't have) -
+# deploy_docker_to_rpis.sh's Bluetooth provisioning step is the permanent,
+# reboot-surviving fix for both cases.
+if [ -S /var/run/dbus/system_bus_socket ]; then
+    timeout 5s bluetoothctl power on >/dev/null 2>&1 || true
+fi
+
 if [ -n "${GH_PAT:-}" ] && [ -n "${GH_REPO:-}" ]; then
     RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
     RUNNER_LABELS="${RUNNER_LABELS:-self-hosted}"

@@ -161,6 +161,40 @@ for ssh_target in "${TARGET_SSH_TARGETS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 4b. Ensure each node's Bluetooth adapter auto-powers on, on this boot and
+# every future one - the container only ever reaches bluetoothd over D-Bus
+# (see README), so it can't fix an unpowered or rfkill-blocked adapter
+# itself; that has to happen here, on the host.
+# ---------------------------------------------------------------------------
+section "Checking Bluetooth auto-power on target nodes"
+
+for ssh_target in "${TARGET_SSH_TARGETS[@]}"; do
+    if ! ssh ${SSH_OPTS} "${ssh_target}" "command -v bluetoothctl" &>/dev/null; then
+        warn "${ssh_target}: bluetoothctl not found, skipping (no Bluetooth stack on this node?)"
+        continue
+    fi
+
+    ssh ${SSH_OPTS} "${ssh_target}" '
+        set -e
+        sudo rfkill unblock bluetooth 2>/dev/null || true
+        CONF=/etc/bluetooth/main.conf
+        if [ -f "$CONF" ] && ! grep -q "^AutoEnable=true" "$CONF"; then
+            sudo grep -q "^\[Policy\]" "$CONF" || echo "[Policy]" | sudo tee -a "$CONF" >/dev/null
+            if sudo grep -q "^AutoEnable" "$CONF"; then
+                sudo sed -i "s/^AutoEnable.*/AutoEnable=true/" "$CONF"
+            else
+                sudo sed -i "/^\[Policy\]/a AutoEnable=true" "$CONF"
+            fi
+            sudo systemctl restart bluetooth
+        fi
+        sudo systemctl enable bluetooth >/dev/null 2>&1 || true
+        bluetoothctl power on >/dev/null 2>&1 || true
+    ' || warn "${ssh_target}: could not configure Bluetooth auto-power - BLE scenarios on this node may need a manual 'rfkill unblock bluetooth && bluetoothctl power on' (see README troubleshooting)"
+
+    info "${ssh_target}: Bluetooth adapter set to auto-power on boot"
+done
+
+# ---------------------------------------------------------------------------
 # 5. Cross-build the image for arm64, here
 # ---------------------------------------------------------------------------
 section "Building ${IMAGE_NAME}:${TAG} for ${PLATFORM}"
