@@ -13,6 +13,8 @@
   }
   h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
   .meta { color: #666; margin-bottom: 1.5rem; }
+  .meta a { color: #0969da; }
+  @media (prefers-color-scheme: dark) { .meta a { color: #58a6ff; } }
   table { border-collapse: collapse; width: 100%; }
   th, td { border: 1px solid #ccc; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
   th { background: #f5f5f5; }
@@ -39,7 +41,15 @@
 </head>
 <body>
   <h1>Scenario report: {{ scenario_name }}</h1>
-  <div class="meta">Executed at {{ started_at }}</div>
+  <div class="meta">
+    Executed at {{ started_at }}
+    {% if log_files %}
+      <br>Logs:
+      {% for label, filename in log_files %}
+        <a href="{{ filename }}">{{ label }}</a>{% if not loop.last %} &middot; {% endif %}
+      {% endfor %}
+    {% endif %}
+  </div>
 
   <table>
     <thead>

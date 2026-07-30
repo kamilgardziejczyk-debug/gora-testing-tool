@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jinja2 import Environment, PackageLoader
+
+if TYPE_CHECKING:  # Import for typing only - reporting must not depend on the tool at runtime.
+    from tools.dut_logger import LogSession
 
 TEMPLATE_NAME = "report.html.j2"
 
@@ -31,6 +35,7 @@ def generate_report(
     total_duration_s: float,
     results: list[TestResult],
     output_path: Path,
+    session: "LogSession | None" = None,
 ) -> None:
     """Render `results` into a self-contained HTML file at `output_path`.
 
@@ -39,6 +44,11 @@ def generate_report(
     contain `<`, `>` and `&` (an MQTT payload is untrusted device output, and
     operators like `count > 2` use `>` themselves), so escaping must not
     depend on the template happening to end in `.html`.
+
+    `session`, when given, contributes the run's log filenames so the report
+    points at the artefacts sitting beside it. Only the names are rendered,
+    not the contents: a chatty DUT would otherwise bloat the HTML, and the
+    logs are more useful greppable on disk.
     """
     env = Environment(loader=PackageLoader("reporting", "templates"), autoescape=True)
     template = env.get_template(TEMPLATE_NAME)
@@ -50,8 +60,29 @@ def generate_report(
         results=results,
         passed_count=sum(1 for result in results if result.passed),
         failed_count=sum(1 for result in results if not result.passed),
+        log_files=_log_file_names(session),
     )
 
+    _write_html(html, output_path)
+
+
+def _log_file_names(session: "LogSession | None") -> list[tuple[str, str]]:
+    """`(label, filename)` pairs for a run's logs, empty when none were captured.
+
+    Bare filenames rather than full paths, so the links still resolve when the
+    report and its logs are copied off the test node together.
+    """
+    if session is None:
+        return []
+    return [
+        ("Tool log", session.tool_path.name),
+        ("DUT log", session.device_path.name),
+        ("Combined log", session.combined_path.name),
+    ]
+
+
+def _write_html(html: str, output_path: Path) -> None:
+    """Write the rendered report, creating its directory if needed."""
     report_dir = output_path.parent
     if report_dir.exists() and not report_dir.is_dir():
         # mkdir(exist_ok=True) only tolerates an existing directory; a stale

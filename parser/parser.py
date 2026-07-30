@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import NamedTuple
 import logging
 
 import yaml
 
+from tools.dut_logger import DEFAULT_BAUD as DEFAULT_DUT_BAUD
 from wrappers import (
     BleCentralWrapper,
     ExecuteCommandWrapper,
@@ -52,6 +54,37 @@ def _parse_wait_after_s(command_node: yaml.MappingNode) -> float | None:
     except (TypeError, ValueError):
         LOGGER.warning("Ignoring invalid wait_after_s value: %s", wait_node.value)
         return None
+
+
+class DutLogConfig(NamedTuple):
+    """A scenario's top-level `dut_log:` settings."""
+
+    port: str
+    baud: int
+
+
+def _parse_dut_log(document: yaml.Node) -> DutLogConfig | None:
+    """Extract the optional top-level `dut_log` mapping, or None if absent."""
+    if not isinstance(document, yaml.MappingNode):
+        return None
+
+    dut_log_node = _mapping_get(document, "dut_log")
+    if not isinstance(dut_log_node, yaml.MappingNode):
+        return None
+
+    port: str | None = None
+    baud = DEFAULT_DUT_BAUD
+    for key_node, value_node in dut_log_node.value:
+        if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
+            continue
+        if key_node.value == "port":
+            port = value_node.value
+        elif key_node.value == "baud":
+            baud = int(value_node.value)
+
+    if port is None:
+        raise ValueError("dut_log: 'port' is required when a dut_log block is present")
+    return DutLogConfig(port=port, baud=baud)
 
 
 def _parse_iterations(loop_body: yaml.MappingNode) -> int:
@@ -124,6 +157,16 @@ class Parser:
         except yaml.YAMLError:
             LOGGER.exception("YAML validation failed")
             return False
+
+    def parse_dut_log(self) -> DutLogConfig | None:
+        """The scenario's `dut_log:` settings, or None if it declares none.
+
+        Separate from `parse()` because capture has to be running before the
+        first command executes, while `parse()` returns the commands
+        themselves. Both share `_load()`, so the file is still read once.
+        """
+        _, document = self._load()
+        return _parse_dut_log(document)
 
     def parse(self) -> list[Wrapper]:
         document_text, document = self._load()

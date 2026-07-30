@@ -329,15 +329,47 @@ The tool is executed using `main.py`. You specify the path to a scenario YAML fi
 *   `-p, --port` (Optional): Serial port for flashing (e.g. `/dev/ttyUSB0`). Overrides the port specified inside the YAML file for all `!ProgramEsptool` commands. Not applicable to `!SubghzSim`, which uses a different device/port and is always configured via its own `port` field in the YAML — see below.
 *   `-f, --firmware` (Optional): Path to the directory containing firmware binaries (such as `.bin`, `.hex`, or `.elf`). Overrides the directory for all `!ProgramEsptool` and `!ProgramJlink` commands.
 *   `-r, --report` (Optional): Path to write the HTML test report to. A directory (existing, ending in `/`, or just a bare name with no `.html` suffix like `reports`) gets a default-named report file written inside it, rather than becoming the report file itself. Defaults to `results/<scenario>_<timestamp>.html`.
+*   `--dut-log` (Optional): Serial port carrying the DUT's own console (e.g. `/dev/ttyACM0`), captured for the whole run into the log files below. Overrides the scenario's `dut_log` block, since the console's device path is a property of the test *node*, not the test.
+*   `--dut-log-baud` (Optional): Baud rate for `--dut-log`. Defaults to the scenario's value, else `115200`.
 
 ### Test Report
 
 Every run writes an HTML report once it finishes, whether every command passed or a command failed and stopped the scenario early — the report always reflects whatever actually ran. It contains:
-*   The scenario file name and when the run started.
+*   The scenario file name and when the run started, with links to the log files below.
 *   One row per executed command: its `name`, its tag (click to expand its exact YAML source), the `validation` expression it was checked against and what was actually observed (blank for commands with no assertion of their own, e.g. anything other than `!MqttExpect`), how long it took, and PASS/FAIL (with the error message, if it failed).
 *   The total wall-clock time for the run, under the table.
 
 A command that fails stops the scenario at that point, same as before this existed — the report is generated either way, so a partial run still leaves a record of what happened.
+
+### Log Files
+
+Alongside the report, every run writes three logs sharing its name — so `results/gateway_20260730_143322.html` comes with:
+
+| File | Contents |
+| --- | --- |
+| `gateway_20260730_143322.tool.log` | The tool's own log output, timestamped |
+| `gateway_20260730_143322.device.log` | The DUT's serial console, timestamped |
+| `gateway_20260730_143322.combined.log` | Both interleaved, plus per-command `START`/`END` markers carrying PASS/FAIL |
+
+The combined log is the one to read when a test fails: it shows what the DUT was saying at the moment a command failed, without cross-referencing timestamps by hand.
+
+Capturing the DUT console needs either `--dut-log` (above) or a top-level `dut_log` block in the scenario:
+
+```yaml
+dut_log:
+  port: "/dev/ttyACM0"
+  baud: 115200      # optional, defaults to 115200
+commands:
+  - ...
+```
+
+Notes:
+*   The tool log starts before the scenario is parsed, so a scenario that fails to load still leaves a log explaining why — as does a run that dies part-way, since every line is flushed as it is written.
+*   A DUT that resets mid-scenario (`!ProgramJlink`, a BLE write that reboots it) makes its USB console disappear and re-enumerate. That is handled: the reader reattaches and notes both events in the combined log. Output emitted while the port was down is lost, and a bench with several CDC devices may need a stable `/dev/serial/by-id/...` path.
+*   If the console **cannot be opened when the run starts**, the scenario aborts before any command executes rather than finishing with a convincing but empty device log.
+*   With no DUT console configured, all three logs are still written; `device.log` says so explicitly, so an empty one is never ambiguous.
+
+See [`tools/dut_logger`](tools/dut_logger/README.md) for the marker format, the standalone bench-check CLI, Docker notes, and the Python API.
 
 ### Execution Examples
 
