@@ -530,6 +530,28 @@ Runs nested scenario commands sequentially multiple times.
 
 ---
 
+## 3a. Standalone Tools (no scenario tag yet)
+
+### `relay_board`
+
+Drives an 8-channel relay board over the GPIO header, for switching power and
+signal lines to a DUT. Available as a CLI and a Python API; the
+`!RelayControl` wrapper that will expose it to scenarios is not written yet.
+
+```bash
+python tools/relay_board/relay_board.py on 3        # energize relay 3
+python tools/relay_board/relay_board.py status      # show all 8
+python tools/relay_board/relay_board.py             # interactive shell
+```
+
+Relays are addressed 1–8, matching the board's `IN1`–`IN8` silkscreen, and
+state latches across invocations. See [its README](tools/relay_board/README.md)
+for the Raspberry Pi 4B wiring table, why the relay board needs its own 5 V
+supply rather than the Pi's, the active-low/active-high setting, and the
+Python API.
+
+---
+
 ## 4. TODO — Known Issues and Cleanup
 
 Findings from a source scan of the whole codebase. Ordered by severity; each entry names the file so it can be picked up independently. Nothing here is fixed yet.
