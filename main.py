@@ -7,7 +7,7 @@ from pathlib import Path
 
 from parser import Parser
 from reporting import TestResult, generate_report
-from wrappers import Wrapper, gpio_cleanup_all, mqtt_registry
+from wrappers import Wrapper, mqtt_registry, relay_cleanup_all
 
 
 LOGGER = logging.getLogger(__name__)
@@ -146,11 +146,11 @@ def run_scenario(wrappers: list[Wrapper], scenario_path: Path, report_path: Path
     finally:
         # A command that raises part-way through - including a KeyboardInterrupt
         # during execute() or the wait_after_s sleep - must still leave the
-        # broker connections closed, GPIO pins released, and a report written,
-        # or the client id stays taken by an orphan, pins stay driven, and the
-        # run leaves no record.
+        # broker connections closed, relays released, and a report written,
+        # or the client id stays taken by an orphan, relays stay energized, and
+        # the run leaves no record.
         mqtt_registry.close_all()
-        gpio_cleanup_all()
+        relay_cleanup_all()
 
         total_duration_s = time.monotonic() - wall_start
         generate_report(scenario_path, started_at, total_duration_s, results, report_path)

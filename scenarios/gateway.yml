@@ -35,6 +35,12 @@ commands:
     firmware: "zephyr.hex"
     wait_after_s: 25
 
+  - !RelayControl
+    name: "Start BLE Advertising"
+    relay: 1
+    pulse_s: 3
+    wait_after_ms: 100
+      
   - !BleCentral:
     name: "Set Wifi Credentials And Reset"
     device: "GoraGateway_01B4EE"

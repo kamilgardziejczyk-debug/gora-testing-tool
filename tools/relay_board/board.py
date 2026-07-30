@@ -16,8 +16,8 @@ try:
 except (ImportError, RuntimeError):
     # ImportError: RPi.GPIO not installed. RuntimeError: installed, but this is
     # not a Raspberry Pi - the module raises on import off-device. Either way we
-    # fall back to simulating the board rather than failing, the same way the
-    # !GpioControl wrapper does, so scenarios and the CLI stay runnable on a PC.
+    # fall back to simulating the board rather than failing, so scenarios and
+    # the CLI stay runnable on a PC.
     GPIO = None
 
 
@@ -26,9 +26,8 @@ LOGGER = logging.getLogger(__name__)
 RELAY_COUNT = 8
 
 # Relay 1..8 -> BCM pin. All are general-purpose with no boot-time pull-up and
-# no I2C/UART/SPI function, all sit on the lower half of the 40-pin header so
-# the 10-wire run stays contiguous, and none is BCM 17 (already driven by
-# scenarios/test.yml's !GpioControl commands).
+# no I2C/UART/SPI function, and all sit on the lower half of the 40-pin header
+# so the 10-wire run stays contiguous.
 DEFAULT_PINS: tuple[int, ...] = (5, 6, 13, 19, 16, 26, 20, 21)
 
 # Most 8-channel opto-isolated boards energize a relay when its IN pin is

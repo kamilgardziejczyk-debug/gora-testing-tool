@@ -4,7 +4,7 @@ Drives an 8-channel relay board from the Raspberry Pi's GPIO header, for
 switching power and signal lines to a DUT during a test.
 
 Usable two ways: as a CLI (one-shot commands and an interactive shell), and as
-a Python API that a `!RelayControl` scenario wrapper will drive.
+a Python API that the `!RelayControl` scenario wrapper drives.
 
 Relays are addressed **1–8**, matching the `IN1`–`IN8` silkscreen on the board.
 You never deal with electrical levels — you say "energize", and the active-low
@@ -28,10 +28,9 @@ The board has 10 inputs: `GND`, `VCC`, and `IN1`–`IN8`.
 | `IN8` | BCM 21 | 40 |
 
 These pins are the default because they are all general-purpose (no I²C, UART
-or SPI function), none has a boot-time pull-up, none is BCM 17 (already driven
-by `scenarios/test.yml`), and they sit together at the bottom of the header so
-the 10-wire run stays contiguous. Override them with `--pins` if your bench
-needs something else.
+or SPI function), none has a boot-time pull-up, and they sit together at the
+bottom of the header so the 10-wire run stays contiguous. Override them with
+`--pins` if your bench needs something else.
 
 ### Power: do not run 8 relays off the Pi's 5 V pin
 
@@ -122,8 +121,8 @@ pip install -r requirements-rpi.txt
 ```
 
 Off-device (or anywhere `RPi.GPIO` won't import) the tool **simulates** instead
-of failing, exactly as the `!GpioControl` wrapper does, so you can exercise the
-CLI on a PC. It says so on startup, and no pins are driven.
+of failing, so you can exercise the CLI on a PC. It says so on startup, and no
+pins are driven.
 
 ## Command line
 
@@ -199,7 +198,7 @@ docker exec gora-node python tools/relay_board/relay_board.py on 3
 
 ## Python API
 
-This is what a `!RelayControl` wrapper will use.
+This is what `wrappers/relay_control_wrapper.py` (the `!RelayControl` tag) uses.
 
 ```python
 from tools.relay_board import RelayBoard

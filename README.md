@@ -1,6 +1,6 @@
 # Gora Testing Tool
 
-An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, toggle GPIOs (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
+An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, control relays (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
 
 ---
 
@@ -24,7 +24,7 @@ An automated, YAML-driven test execution and hardware control tool designed to p
     ```bash
     pip install -r requirements.txt
     ```
-    On a Raspberry Pi (or anywhere you want `!GpioControl` to drive real pins instead of falling back to simulation), also install:
+    On a Raspberry Pi (or anywhere you want `!RelayControl` to drive real pins instead of falling back to simulation), also install:
     ```bash
     pip install -r requirements-rpi.txt
     ```
@@ -32,7 +32,7 @@ An automated, YAML-driven test execution and hardware control tool designed to p
 ### Running in Docker on a Raspberry Pi test node
 
 A `Dockerfile` is provided so a new HIL test node can be provisioned without
-installing Python packages on the Pi itself. **This layer covers GPIO,
+installing Python packages on the Pi itself. **This layer covers relay,
 serial and BLE scenarios** — J-Link and MQTT need additional device access
 that later steps add.
 
@@ -42,28 +42,28 @@ Build the image on the Pi (native build, no cross-compilation needed):
 docker build -t gora-testing-tool .
 ```
 
-Run a scenario, passing through the GPIO and serial devices:
+Run a scenario, passing through the serial device it needs:
 
 ```bash
 docker run --rm \
-  --device /dev/gpiomem \
   --device /dev/ttyUSB0 \
   -e TZ=Europe/Dublin \
   -v "$PWD/firmware:/app/firmware:ro" \
   -v "$PWD/results:/app/results" \
   gora-testing-tool \
-  -t scenarios/test.yml -p /dev/ttyUSB0
+  -t scenarios/jlink_test.yml
 ```
 
 Notes on this invocation:
 
 *   Arguments after the image name go straight to `main.py`, so every flag in
     section 2 works unchanged.
-*   `/dev/gpiomem` is what `RPi.GPIO` memory-maps to drive pins. Without it,
-    `!GpioControl` falls back to logging the pin change instead of performing
-    it, and the scenario still passes — so an absent device is easy to miss.
-    Check the logs for `RPi.GPIO is not available` to confirm you are driving
-    real hardware.
+*   Add `--device /dev/gpiomem` too for a scenario that also uses
+    `!RelayControl` — that's what `RPi.GPIO` memory-maps to drive pins.
+    Without it, `!RelayControl` falls back to logging the pin change instead
+    of performing it, and the scenario still passes — so an absent device is
+    easy to miss. Check the logs for `RPi.GPIO is not available` to confirm
+    you are driving real hardware.
 *   `results/` must be bind-mounted or the HTML report is written inside the
     container and lost when it exits.
 *   `firmware/` is mounted read-only; it is `.gitignore`d and therefore not
@@ -341,12 +341,7 @@ A command that fails stops the scenario at that point, same as before this exist
 
 ### Execution Examples
 
-#### 1. Running the Standard ESP32 flasher & GPIO Loop scenario:
-```bash
-python main.py -t scenarios/test.yml -p /dev/ttyUSB0 -f /path/to/my/firmware/binaries
-```
-
-#### 2. Running the NXP FRDM-RW612 J-Link flashing scenario:
+#### 1. Running the NXP FRDM-RW612 J-Link flashing scenario:
 ```bash
 python main.py -t scenarios/jlink_test.yml -f /path/to/my/nxp/firmware
 ```
@@ -378,12 +373,13 @@ Flashes an ESP32 microcontroller using the `esptool` library.
 *   `partition_table`: (Required) Partition table filename.
 *   `firmware`: (Required) App firmware filename.
 
-### `!GpioControl`
-Toggles Raspberry Pi GPIO pins (requires `RPi.GPIO`).
+### `!RelayControl`
+Energizes or de-energizes one channel of an 8-channel relay board over the Raspberry Pi GPIO header (requires `RPi.GPIO`). Wraps `tools/relay_board` — see [its README](tools/relay_board/README.md) for wiring, power supply notes, active-low/active-high polarity, and the standalone CLI/REPL.
 *   `name`: (Optional) Descriptive log name.
-*   `pin`: (Required) BCM pin number.
-*   `state`: (Required) `true` (HIGH) or `false` (LOW).
-*   `wait_after_s`: (Optional) Time in seconds to sleep after executing the pin change.
+*   `relay`: (Required) Relay number, 1-8.
+*   `state`: (Required unless `pulse_s` is given) `1` (energized) or `0` (de-energized). Leaves the relay in that state after the command returns.
+*   `pulse_s`: (Required unless `state` is given) Energizes the relay, waits this many seconds, then de-energizes it again — one command, for simulating a momentary button push. Mutually exclusive with `state`.
+*   `wait_after_s`: (Optional) Time in seconds to sleep after executing the change.
 
 ### `!UsbSwitch`
 **No-op stub** — `execute()` only logs a warning; no USB switch hardware is actually controlled yet. Implement `UsbSwitchWrapper.execute()` before relying on this in a real scenario.
@@ -527,28 +523,6 @@ Runs nested scenario commands sequentially multiple times.
 *   `name`: (Optional) Descriptive log name.
 *   `iterations`: (Required) Number of loop iterations.
 *   `commands`: (Required) A list of nested scenario commands.
-
----
-
-## 3a. Standalone Tools (no scenario tag yet)
-
-### `relay_board`
-
-Drives an 8-channel relay board over the GPIO header, for switching power and
-signal lines to a DUT. Available as a CLI and a Python API; the
-`!RelayControl` wrapper that will expose it to scenarios is not written yet.
-
-```bash
-python tools/relay_board/relay_board.py on 3        # energize relay 3
-python tools/relay_board/relay_board.py status      # show all 8
-python tools/relay_board/relay_board.py             # interactive shell
-```
-
-Relays are addressed 1–8, matching the board's `IN1`–`IN8` silkscreen, and
-state latches across invocations. See [its README](tools/relay_board/README.md)
-for the Raspberry Pi 4B wiring table, why the relay board needs its own 5 V
-supply rather than the Pi's, the active-low/active-high setting, and the
-Python API.
 
 ---
 

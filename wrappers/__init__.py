@@ -3,7 +3,7 @@ from .wrapper import Wrapper
 from .program_esptool_wrapper import ProgramEsptoolWrapper
 from .program_jlink_wrapper import ProgramJlinkWrapper
 from .execute_command_wrapper import ExecuteCommandWrapper
-from .gpio_control_wrapper import GpioControlWrapper, cleanup_all as gpio_cleanup_all
+from .relay_control_wrapper import RelayControlWrapper, cleanup_all as relay_cleanup_all
 from .usb_switch_wrapper import UsbSwitchWrapper
 from .subghz_sim_wrapper import SubghzSimWrapper
 from .ble_central_wrapper import BleCentralWrapper

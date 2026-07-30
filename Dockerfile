@@ -2,8 +2,8 @@
 #
 # Gora testing tool - HIL test node image.
 #
-# Targets a Raspberry Pi 4 test node (linux/arm64). This layer covers the GPIO
-# (!GpioControl), serial (!ProgramEsptool, !SubghzSim), BLE (!BleCentral) and
+# Targets a Raspberry Pi 4 test node (linux/arm64). This layer covers the relay
+# (!RelayControl), serial (!ProgramEsptool, !SubghzSim), BLE (!BleCentral) and
 # J-Link (!ProgramJlink) scenarios; MQTT support is added in a later step.
 #
 # Python is pinned at 3.11 because the codebase uses PEP 604 unions in
