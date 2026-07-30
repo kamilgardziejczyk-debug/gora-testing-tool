@@ -406,12 +406,17 @@ Runs a scripted sub-GHz simulator session over a serial link: opens the port, ap
     actions:
       - add: temp_hum          # add <heat|smoke|co|temp_hum>
         wait_after_ms: 1000
+      - add: co                # add 3 more of the same type in one action
+        count: 3
+        wait_after_ms: 1000
       - set: "1 temp 30 humidity 70"   # set <sensor_id> <field> <value> ...
         wait_after_ms: 5000
       - del: 1                 # del <sensor_id>
         wait_after_ms: 1000
     ```
     Sensor ids are assigned per command, starting at `1` in the order the `add` actions run — so the first `add` above is `#1`. Each `!SubghzSim` command starts with an empty sensor list; ids from an earlier command are gone.
+
+    `count`: (Optional, `add` only) Adds this many sensors of the same type in one action, e.g. `count: 3` on an `add: co` assigns them the next 3 free ids in order. `wait_after_ms` still applies once, after all of them are added, not between each. Defaults to `1`. Using it on any other verb is rejected at parse time.
 
     A bad action **fails the scenario** rather than being skipped: an unknown sensor type, a non-numeric id or a malformed `set` is rejected while parsing the file, before any hardware is touched, and an unknown sensor id or a field the sensor's type does not have fails when the action runs.
 

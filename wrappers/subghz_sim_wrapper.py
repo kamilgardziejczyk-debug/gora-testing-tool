@@ -33,6 +33,7 @@ class SubghzAction(NamedTuple):
     wait_after_ms: int | None
     sensor_id: int | None = None
     fields: tuple = ()
+    count: int = 1
 
 
 class SubghzSimWrapper(Wrapper):
@@ -102,12 +103,15 @@ class SubghzSimWrapper(Wrapper):
             verb: str | None = None
             arg = ""
             wait_after_ms: int | None = None
+            count: int | None = None
             for key_node, value_node in action_node.value:
                 if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
                     continue
                 key = key_node.value
                 if key == "wait_after_ms":
                     wait_after_ms = int(value_node.value)
+                elif key == "count":
+                    count = int(value_node.value)
                 elif key in ACTION_VERBS:
                     verb = key
                     arg = value_node.value
@@ -116,12 +120,14 @@ class SubghzSimWrapper(Wrapper):
                 raise ValueError(
                     f"SubghzSim: action #{index + 1} must have one of: {', '.join(sorted(ACTION_VERBS))}"
                 )
+            if count is not None and verb != "add":
+                raise ValueError(f"SubghzSim: 'count' is only valid on an 'add' action, not '{verb}'")
 
-            actions.append(self._build_action(verb, arg, wait_after_ms))
+            actions.append(self._build_action(verb, arg, wait_after_ms, count))
 
         return actions
 
-    def _build_action(self, verb: str, arg: str, wait_after_ms: int | None) -> SubghzAction:
+    def _build_action(self, verb: str, arg: str, wait_after_ms: int | None, count: int | None) -> SubghzAction:
         """Validate one action's argument, so a typo fails before any hardware is touched.
 
         Field *names* can only be checked against a live sensor's type, so those
@@ -133,7 +139,9 @@ class SubghzSimWrapper(Wrapper):
             if type_name not in SENSOR_TYPES:
                 choices = ", ".join(sorted(set(SENSOR_TYPES)))
                 raise ValueError(f"SubghzSim: unknown sensor type '{arg}' (choices: {choices})")
-            return SubghzAction(verb, type_name, wait_after_ms)
+            if count is not None and count < 1:
+                raise ValueError(f"SubghzSim: 'count' must be at least 1, got {count}")
+            return SubghzAction(verb, type_name, wait_after_ms, count=count if count is not None else 1)
 
         if verb == "del":
             return SubghzAction(verb, arg, wait_after_ms, sensor_id=self._parse_id(verb, arg))
@@ -181,7 +189,8 @@ class SubghzSimWrapper(Wrapper):
 
         try:
             if action.verb == "add":
-                simulator.add_sensor(action.arg)
+                for _ in range(action.count):
+                    simulator.add_sensor(action.arg)
             elif action.verb == "set":
                 simulator.update_sensor(action.sensor_id, action.fields)
             elif action.verb == "del":
