@@ -1,0 +1,1 @@
+- Aways use "validation" filed for specfiying the testing conditions.

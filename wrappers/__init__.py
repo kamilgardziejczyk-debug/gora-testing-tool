@@ -7,6 +7,7 @@ from .relay_control_wrapper import RelayControlWrapper, cleanup_all as relay_cle
 from .usb_switch_wrapper import UsbSwitchWrapper
 from .subghz_sim_wrapper import SubghzSimWrapper
 from .ble_central_wrapper import BleCentralWrapper
+from .dut_log_expect_wrapper import DutLogExpectWrapper
 from .mqtt_subscribe_wrapper import MqttSubscribeWrapper
 from .mqtt_expect_wrapper import MqttExpectWrapper
 from .mqtt_disconnect_wrapper import MqttDisconnectWrapper

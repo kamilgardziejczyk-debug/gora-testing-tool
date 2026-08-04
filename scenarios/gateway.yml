@@ -25,6 +25,18 @@
 # !MqttDisconnect at the end is optional - the runner closes any still-open
 # session once the scenario ends anyway - but freeing "iot" here makes it
 # explicit that the checks above are done with it.
+#
+# !DutLogExpect checks the wall clock over the console, and sits deliberately
+# BEFORE the shadow !MqttExpect. AWS IoT cannot be reached without a valid
+# clock (TLS certificate validity is checked against it), so an unsynced device
+# fails the shadow check too - but as "count == 0", which says nothing about
+# why. Asserting the clock first turns that into the actual cause. Reference
+# timings from a healthy run: clock set, AWS IoT connected 38 ms later, shadow
+# published 83 ms later.
+
+dut_log:
+  port: "/dev/ttyACM0"
+  baud: 115200
 
 commands:
   - !ProgramJlink:
@@ -92,6 +104,11 @@ commands:
           validation: "value == 01"
           attempts: 15
           retry_wait_ms: 2000
+
+  - !DutLogExpect:
+    name: "Wall Clock Set From NTP"
+    validation: 'Wall clock set from \S+: unix=[0-9]+'
+    timeout_s: 60
 
   - !MqttExpect:
     name: "Collect Device Shadow Messages"

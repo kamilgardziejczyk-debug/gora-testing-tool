@@ -369,7 +369,9 @@ Notes:
 *   If the console **cannot be opened when the run starts**, the scenario aborts before any command executes rather than finishing with a convincing but empty device log.
 *   With no DUT console configured, all three logs are still written; `device.log` says so explicitly, so an empty one is never ambiguous.
 
-See [`tools/dut_logger`](tools/dut_logger/README.md) for the marker format, the standalone bench-check CLI, Docker notes, and the Python API.
+*   Captured device lines are also kept in memory (the last 5000) as well as written to disk, so a scenario can assert on what the DUT said with [`!DutLogExpect`](#dutlogexpect) instead of only reading the log afterwards.
+
+See [`tools/dut_logger`](tools/dut_logger/README.md) for the marker format, the standalone bench-check CLI, Docker notes, and the Python API — including reading captured device lines.
 
 ### Execution Examples
 
@@ -554,6 +556,33 @@ A failed assertion **fails the scenario**, logging every message counted for thi
 Closes a session opened by `!MqttSubscribe`. Optional — the runner closes any session still open when the scenario ends, including after a failure. Use it to free a client id partway through a scenario, for example so the device can reconnect with it.
 *   `name`: (Optional) Descriptive log name.
 *   `session`: (Required) Session name given to `!MqttSubscribe`. An unknown name logs a warning rather than failing the scenario.
+
+### `!DutLogExpect`
+Asserts that the DUT's serial console emitted a line satisfying `validation`, failing the scenario if it never does. For the things only the device can tell you — whether its wall clock was set, whether a subsystem came up — rather than reading `device.log` by eye after the run.
+
+Needs a DUT console to be captured (`--dut-log`, or a `dut_log` block). A scenario using this tag without one is **rejected before the first command runs**, since the check cannot pass and finding out early saves a flash and a full provisioning cycle.
+
+```yaml
+  - !DutLogExpect:
+    name: "Wall Clock Set From NTP"
+    validation: 'Wall clock set from \S+: unix=[0-9]+'
+    timeout_s: 60
+```
+
+*   `name`: (Optional) Descriptive log name.
+*   `validation`: (Required) A Python regular expression, *searched* against each captured line (it need not match the whole line).
+*   `since`: (Optional) How much of the capture to search. `scenario` (default) searches the whole run, including output from before this command. `command` searches only from this command onwards.
+*   `timeout_s`: (Optional) Seconds to wait for a matching line. Defaults to `30`.
+
+Three things to know:
+
+*   **Use single quotes around the validation.** A regex in double quotes (`"...\S+..."`) is a YAML *scanner error*, because YAML treats `\S` as an invalid escape — unlike every other field in these scenarios, which are conventionally double-quoted. Single-quoted YAML passes backslashes through untouched, so `'\S+'` and `'\d{4}'` work as written.
+*   **It searches output captured before it runs**, so it can be placed anywhere after the action that provokes the line. A DUT does not wait to be asked: the gateway sets its clock about 16 s into boot, which on a scenario that resets it early is several commands before anything reads for it. This is why the default `since` is `scenario` — a wait-only check would sit out its whole timeout while the line it wanted was already captured. Use `since: command` when a match from *before* an action would be a false pass, such as re-checking a sync after a deliberate reset.
+*   **A retry is not a failure.** Assert that a line eventually appears; don't try to assert a warning never did. The gateway's first NTP query routinely fails with `-11` (`EAGAIN` — DNS isn't usable in the instant after DHCP) and the next attempt succeeds, so a "no NTP errors" check would fail every healthy run. Bound how long a retry may take with `timeout_s` instead.
+
+A failed match **fails the scenario**, logging how many lines were examined and the last 15 the DUT emitted, so the report shows what it *was* saying. If lines have been evicted from the in-memory buffer (over 5000 captured), the failure says so rather than implying the DUT definitely never emitted the line — `device.log` remains complete either way.
+
+Matching is against the line **as the firmware emitted it**; the `[HH:MM:SS.mmm]` prefix in the log files is added by this tool and is not part of what the regex sees. A timestamp the firmware prints itself — such as the gateway's own `[2026-08-04T06:25:01,707000Z]` — *is* matchable, which makes `validation: '^\[19[0-9]{2}-'` a way to spot a device still running on an unsynced 1970 clock.
 
 ### `!Loop`
 Runs nested scenario commands sequentially multiple times.

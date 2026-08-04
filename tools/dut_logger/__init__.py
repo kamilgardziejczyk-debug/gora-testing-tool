@@ -8,8 +8,10 @@ from .handler import LogSessionHandler, attach, detach
 from .reader import DEFAULT_BAUD, DutLogger
 from .session import (
     COMBINED_SUFFIX,
+    DEVICE_BUFFER_LINES,
     DEVICE_SUFFIX,
     TOOL_SUFFIX,
+    DeviceLine,
     LogSession,
     log_paths,
 )
@@ -17,8 +19,10 @@ from .session import (
 __all__ = [
     "COMBINED_SUFFIX",
     "DEFAULT_BAUD",
+    "DEVICE_BUFFER_LINES",
     "DEVICE_SUFFIX",
     "TOOL_SUFFIX",
+    "DeviceLine",
     "DutLogger",
     "LogSession",
     "LogSessionHandler",

@@ -111,6 +111,30 @@ def apply_cli_overrides(wrappers: list[Wrapper], port: str | None, firmware: str
             wrapper.firmware_dir = firmware
 
 
+def attach_dut_log_session(wrappers: list[Wrapper], session: LogSession | None) -> None:
+    """Give commands that assert on DUT output access to the run's capture.
+
+    `session` is None when no DUT console is being captured. A scenario that
+    asks for such a check anyway is rejected here rather than at the moment the
+    check runs: it cannot pass, and failing before the first command means
+    finding out before a flash and a full BLE provisioning cycle, not after.
+    """
+    needing_dut_log = [wrapper for wrapper in wrappers if wrapper.requires_dut_log]
+    if not needing_dut_log:
+        return
+
+    if session is None:
+        tags = ", ".join(sorted({f"!{wrapper.tag}" for wrapper in needing_dut_log}))
+        raise ValueError(
+            f"This scenario has {len(needing_dut_log)} command(s) asserting on DUT console "
+            f"output ({tags}), but no console is being captured. Pass --dut-log <port> "
+            f"(e.g. /dev/ttyACM0), or add a top-level 'dut_log' block to the scenario."
+        )
+
+    for wrapper in needing_dut_log:
+        wrapper.log_session = session
+
+
 def resolve_report_path(test_file: str, report_arg: str | None) -> Path:
     """The default report path is derived from the scenario name and the
     current time, so repeated runs of the same scenario don't overwrite
@@ -288,6 +312,7 @@ def main() -> None:
         wrappers, scenario_dut_log = load_scenario(args.test)
         apply_cli_overrides(wrappers, args.port, args.firmware)
         dut_logger = start_dut_logging(session, scenario_dut_log, args)
+        attach_dut_log_session(wrappers, session if dut_logger is not None else None)
         run_scenario(wrappers, Path(args.test), report_path, session)
     except Exception:
         # Logged rather than left to the default excepthook: that writes the

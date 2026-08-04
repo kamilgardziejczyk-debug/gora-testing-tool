@@ -157,3 +157,47 @@ session.tool_path, session.device_path, session.combined_path
 `LogSession` is safe to write from any thread — the reader thread and the
 scenario runner both write to the combined log — and every line is flushed as
 it is written, so a run killed mid-scenario still leaves a usable log.
+
+### Reading captured device lines
+
+Device output is also kept in memory as it is written, so code can assert on
+what the DUT said rather than only leaving it on disk. This is what a scenario
+command asserting on firmware output is built from.
+
+```python
+anchor = session.device_seq()          # 0 until the first line is captured
+
+session.device_lines()                 # everything still buffered
+session.device_lines(anchor)           # only what arrived after `anchor`
+session.wait_for_device_lines(anchor, timeout_s=30.0)
+
+session.device_lines_dropped()         # lines evicted from the buffer
+```
+
+Each entry is a `DeviceLine` with `seq` (position in the capture, from 1, never
+reused), `at` (`time.monotonic()` when captured) and `text`.
+
+Notes:
+
+*   `text` is the line **as the DUT emitted it** — no `[HH:MM:SS.mmm]` prefix.
+    The log *files* keep their prefixes; a pattern matched against firmware
+    output does not have to know how this tool formats its logs.
+*   `wait_for_device_lines()` returns immediately with whatever is already
+    newer than `since_seq`, and only waits when there is nothing. So a check
+    still sees output that arrived **before** it started looking — which is the
+    common case, since a DUT does not wait to be asked and a reset early in a
+    scenario can have it say the interesting thing several commands earlier.
+    Pass `since_seq=0` to search the whole capture.
+*   It wakes on *any* new line, not a matching one: what counts as a match
+    belongs to the caller, which loops until satisfied or until its own
+    deadline passes. It returns an empty list on timeout, and also if the
+    session is closed while waiting, rather than blocking to the full timeout.
+*   `at` is monotonic on purpose. The host may be correcting its own clock
+    while a scenario runs — including the Pi's first NTP sync — and an
+    elapsed-time comparison must not be able to go backwards.
+*   The buffer holds the last `DEVICE_BUFFER_LINES` (5000) lines. A quiet run
+    emits a few hundred, so a whole scenario normally stays available, while a
+    DUT stuck in a reboot loop cannot exhaust memory. Once
+    `device_lines_dropped()` is non-zero the in-memory view is no longer the
+    whole capture, so a failed search over it does not prove the DUT never said
+    the thing. The log files stay complete either way.

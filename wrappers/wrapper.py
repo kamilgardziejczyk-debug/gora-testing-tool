@@ -1,5 +1,11 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # imported for typing only, keeping the base class dependency-free
+    from tools.dut_logger import LogSession
 
 
 class Wrapper(ABC):
@@ -24,6 +30,12 @@ class Wrapper(ABC):
     no pass/fail assertion of their own. A wrapper that does have one (like
     `!MqttExpect`) sets both, so the report can render them uniformly without
     knowing which wrapper type produced them.
+
+    `log_session` is the run's `LogSession`, set by main.py before the scenario
+    runs - but only on wrappers declaring `requires_dut_log`, and only when a
+    DUT console is actually being captured. It stays `None` otherwise, which a
+    wrapper needing it must report as the misconfiguration it is rather than
+    waiting for output that cannot arrive.
     """
 
     wait_after_s: float | None = None
@@ -32,13 +44,15 @@ class Wrapper(ABC):
     raw_yaml: str | None = None
     validation_expected: str | None = None
     validation_actual: str | None = None
+    log_session: LogSession | None = None
 
-    # Capability markers `apply_cli_overrides()` checks instead of an isinstance
-    # chain, so a new flashing wrapper opts in here without main.py needing an
-    # edit for it. A wrapper declaring one must define the matching attribute
-    # (`port` / `firmware_dir`) for the override to actually have somewhere to go.
+    # Capability markers main.py checks instead of an isinstance chain, so a new
+    # wrapper opts in here without main.py needing an edit for it. A wrapper
+    # declaring one of the override markers must define the matching attribute
+    # (`port` / `firmware_dir`) for the override to have somewhere to go.
     supports_port_override: bool = False
     supports_firmware_dir_override: bool = False
+    requires_dut_log: bool = False
 
     @abstractmethod
     def parse(self) -> None:
