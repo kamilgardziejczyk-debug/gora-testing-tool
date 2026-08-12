@@ -26,6 +26,15 @@
 # session once the scenario ends anyway - but freeing "iot" here makes it
 # explicit that the checks above are done with it.
 #
+# The sub-GHz check counts `count_by: "seq"` - journal *samples*, not journal
+# messages. The device uploads whatever it has accumulated every 120 s
+# regardless of how much that is, so the number of messages 192 samples arrive
+# in is a property of that timer, not of the gateway forwarding correctly:
+# 192 samples could be one publish or five. `seq` is unique per sample, so
+# counting distinct values is immune to the split, and to a QoS 1 redelivery
+# arriving twice. timeout_s must therefore clear a whole upload period - the
+# samples can land just after one fires, leaving a ~120 s wait for the next.
+#
 # !DutLogExpect checks the wall clock over the console, and sits deliberately
 # BEFORE the shadow !MqttExpect. AWS IoT cannot be reached without a valid
 # clock (TLS certificate validity is checked against it), so an unsynced device
@@ -135,9 +144,10 @@ commands:
   - !MqttExpect:
     name: "Collect Simulated Sensors Messages"
     session: "iot"
-    topic: "gora/gateway-01/subghz/#"
+    topic: "gora/gateway-01/journal"
+    count_by: "seq"
     validation: "count == 192"
-    timeout_s: 130
+    timeout_s: 150
 
   - !MqttDisconnect:
     name: "Close The Listener"
