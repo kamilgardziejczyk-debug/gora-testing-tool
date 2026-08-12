@@ -112,7 +112,13 @@ with MqttListener(...) as listener:
 
 ### Reference
 
-**`MqttListener(endpoint, port, client_id, cert, private_key, root_ca)`**
+**`MqttListener(endpoint, port, client_id, cert, private_key, root_ca, log_session=None)`**
+
+`log_session` is an optional [`LogSession`](../dut_logger/README.md) — given
+one, this listener also writes its traffic and lifecycle to that run's
+`<stem>.mqtt.log` and `<stem>.combined.log`. `main.py` passes the run's session
+for every `!MqttSubscribe`; standalone use leaves it `None` and nothing is
+written. The dependency is typing-only, so this tool stays importable on its own.
 
 | Method | Behaviour |
 | --- | --- |
@@ -143,6 +149,9 @@ UTF-8 with `errors="replace"`.
   diagnostics, independent of what `stream()` has taken.
 - **The pending buffer holds 1000 messages.** Past that, new messages are
   dropped and a warning is logged once. Only a concern on very chatty topics.
+  A dropped message is still written to `mqtt.log`, which is filled before the
+  buffer is touched — so the record of what arrived survives even when a reader
+  can no longer be given it.
 - **`stream(duration_s=N)` bounds total time, not idle time.** It stops N
   seconds after the call, regardless of how many messages arrived.
 

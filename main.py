@@ -135,6 +135,17 @@ def attach_dut_log_session(wrappers: list[Wrapper], session: LogSession | None) 
         wrapper.log_session = session
 
 
+def attach_mqtt_log_session(wrappers: list[Wrapper], session: LogSession) -> None:
+    """Give commands that open MQTT sessions somewhere to log their traffic.
+
+    Unconditional, unlike `attach_dut_log_session`: the MQTT log needs no
+    hardware attached, so a scenario opening a broker session always gets one.
+    """
+    for wrapper in wrappers:
+        if wrapper.captures_mqtt_log:
+            wrapper.log_session = session
+
+
 def resolve_report_path(test_file: str, report_arg: str | None) -> Path:
     """The default report path is derived from the scenario name and the
     current time, so repeated runs of the same scenario don't overwrite
@@ -313,6 +324,7 @@ def main() -> None:
         apply_cli_overrides(wrappers, args.port, args.firmware)
         dut_logger = start_dut_logging(session, scenario_dut_log, args)
         attach_dut_log_session(wrappers, session if dut_logger is not None else None)
+        attach_mqtt_log_session(wrappers, session)
         run_scenario(wrappers, Path(args.test), report_path, session)
     except Exception:
         # Logged rather than left to the default excepthook: that writes the
@@ -325,7 +337,13 @@ def main() -> None:
     finally:
         if dut_logger is not None:
             dut_logger.stop()
-        LOGGER.info("Wrote logs to %s, %s, %s", session.tool_path, session.device_path, session.combined_path)
+        LOGGER.info(
+            "Wrote logs to %s, %s, %s, %s",
+            session.tool_path,
+            session.device_path,
+            session.mqtt_path,
+            session.combined_path,
+        )
         session.close()
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Callable, Optional
 
@@ -9,6 +10,8 @@ import serial
 
 from .registry import Registry
 from .sensors import Sensor
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Reporter:
@@ -29,7 +32,9 @@ class Reporter:
         self._thread.join(timeout=self._interval_s + 1)
 
     def send_now(self, sensor: Sensor) -> None:
-        self._ser.write(sensor.to_frame())
+        frame = sensor.to_frame()
+        LOGGER.info("subghz_sim TX #%d %s", sensor.sensor_id, frame.hex(" "))
+        self._ser.write(frame)
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_s):

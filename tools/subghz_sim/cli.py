@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import cmd
+import logging
+from pathlib import Path
 
 from .registry import UnknownSensorId, UnknownSensorType
 from .sensors import SENSOR_TYPES, parse_field_pairs
@@ -15,6 +17,9 @@ from .simulator import DEFAULT_BAUD, DEFAULT_INTERVAL_S, SubghzSimulator
 
 EXIT_OK = 0
 EXIT_CONNECTION_ERROR = 2
+EXIT_LOG_FILE_ERROR = 3
+
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 
 class SubghzShell(cmd.Cmd):
@@ -108,12 +113,55 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          help=f"Baud rate (default: {DEFAULT_BAUD})")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S,
                          help=f"Heartbeat interval in seconds (default: {DEFAULT_INTERVAL_S})")
+    parser.add_argument("--log-file", default=None,
+                         help="Also append this session's log (every frame sent, every state "
+                              "change) to this file. Missing directories are created")
     return parser
 
 
+def attach_log_file(path: Path) -> logging.FileHandler:
+    """Start copying the tool's log output into `path`, returning the handler.
+
+    Appends rather than truncates: the path is chosen by the operator and stays
+    the same across runs, so opening it in write mode would silently discard the
+    previous session's capture — which is exactly the record wanted when
+    comparing a working bench against a broken one.
+
+    Raises `OSError` if the file cannot be opened.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(path, mode="a", encoding="utf-8")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
 def main(argv=None) -> int:
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     args = build_arg_parser().parse_args(argv)
 
+    log_handler: logging.FileHandler | None = None
+    if args.log_file is not None:
+        try:
+            log_handler = attach_log_file(Path(args.log_file))
+        except OSError as error:
+            print(f"error: could not open log file '{args.log_file}' ({error})")
+            return EXIT_LOG_FILE_ERROR
+        print(f"logging to {args.log_file}")
+
+    try:
+        return _run(args)
+    finally:
+        # Detached and closed explicitly rather than left to interpreter exit,
+        # so the file is flushed and released even when the REPL is left by an
+        # exception - a half-written log is worth less than none.
+        if log_handler is not None:
+            logging.getLogger().removeHandler(log_handler)
+            log_handler.close()
+
+
+def _run(args: argparse.Namespace) -> int:
+    """Open the link, run the REPL until it exits, and close the link."""
     simulator = SubghzSimulator(port=args.port, baud=args.baud, interval_s=args.interval)
     try:
         simulator.open()

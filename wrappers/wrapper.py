@@ -32,10 +32,12 @@ class Wrapper(ABC):
     knowing which wrapper type produced them.
 
     `log_session` is the run's `LogSession`, set by main.py before the scenario
-    runs - but only on wrappers declaring `requires_dut_log`, and only when a
-    DUT console is actually being captured. It stays `None` otherwise, which a
-    wrapper needing it must report as the misconfiguration it is rather than
-    waiting for output that cannot arrive.
+    runs on wrappers declaring either `requires_dut_log` or `captures_mqtt_log`.
+    For `requires_dut_log` it is only set when a DUT console is actually being
+    captured, and stays `None` otherwise - which a wrapper needing it must
+    report as the misconfiguration it is rather than waiting for output that
+    cannot arrive. For `captures_mqtt_log` it is always set, since the MQTT log
+    does not depend on any hardware being attached.
     """
 
     wait_after_s: float | None = None
@@ -53,6 +55,7 @@ class Wrapper(ABC):
     supports_port_override: bool = False
     supports_firmware_dir_override: bool = False
     requires_dut_log: bool = False
+    captures_mqtt_log: bool = False
 
     @abstractmethod
     def parse(self) -> None:

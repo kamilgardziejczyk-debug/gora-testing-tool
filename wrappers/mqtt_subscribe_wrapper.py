@@ -28,7 +28,12 @@ class MqttSubscribeWrapper(Wrapper):
     check both needing "gateway-01"'s client_id would otherwise evict each
     other. !MqttExpect's own `topic` field then picks which topic each check
     is counting.
+
+    Everything the session receives is written to the run's `.mqtt.log` and
+    `.combined.log` as it arrives, whether or not a later !MqttExpect reads it.
     """
+
+    captures_mqtt_log = True
 
     def __init__(self, command_node: yaml.MappingNode):
         self.command_node = command_node
@@ -123,6 +128,7 @@ class MqttSubscribeWrapper(Wrapper):
             cert=str(cert_paths["cert"]),
             private_key=str(cert_paths["private_key"]),
             root_ca=str(cert_paths["root_ca"]),
+            log_session=self.log_session,
         )
 
         try:

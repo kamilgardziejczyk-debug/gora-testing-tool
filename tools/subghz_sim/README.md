@@ -20,6 +20,13 @@ moment it is removed.
 is set explicitly; from then on the value is pinned and reported unchanged
 (shown as `(manual)`).
 
+Every frame written to the wire (immediate or heartbeat) is logged at `INFO`
+level with the sensor id and the frame bytes in hex, e.g.:
+
+```
+2026-08-05 10:03:12,001 INFO tools.subghz_sim.reporter: subghz_sim TX #1 a5 01 03 01 01 03 0e 01 2b d1
+```
+
 ## Install
 
 ```bash
@@ -29,8 +36,16 @@ pip install -r tools/subghz_sim/requirements.txt   # pyserial
 ## Command line
 
 ```bash
-python tools/subghz_sim/subghz_sim.py --port /dev/ttyUSB0 --baud 115200 --interval 5
+python tools/subghz_sim/subghz_sim.py --port /dev/ttyUSB0 --baud 115200 --interval 5 \
+    --log-file results/subghz.log
 ```
+
+| Option | Notes |
+| --- | --- |
+| `--port` | **Required.** Serial port, e.g. `/dev/ttyUSB0` or `COM5` |
+| `--baud` | Baud rate (default: `115200`) |
+| `--interval` | Heartbeat interval in seconds (default: `5`) |
+| `--log-file` | Also write the session's log to this file — see below (default: console only) |
 
 ```
 Sub-GHz sensor simulator. Type 'help' for commands, 'quit' to exit.
@@ -47,7 +62,42 @@ removed #2
 subghz> quit
 ```
 
-Exit codes: `0` clean exit, `2` the serial port could not be opened.
+Exit codes: `0` clean exit, `2` the serial port could not be opened, `3` the
+`--log-file` could not be opened.
+
+### Saving the log to a file
+
+`--log-file <path>` keeps everything the console shows in a file as well: the
+session banner, every frame written to the wire, and every add/update/remove.
+That is the whole record of what the gateway was sent, which is what a bench
+run is usually worth keeping.
+
+```bash
+python tools/subghz_sim/subghz_sim.py --port /dev/ttyUSB0 --log-file results/subghz.log
+```
+
+```
+2026-08-06 14:32:06,684 INFO tools.subghz_sim.simulator: Simulator active on /dev/ttyUSB0 at 115200 baud, heartbeat every 5.0s
+2026-08-06 14:32:06,684 INFO tools.subghz_sim.reporter: subghz_sim TX #1 a5 01 03 01 01 03 ee 00 31 71
+2026-08-06 14:32:06,684 INFO tools.subghz_sim.simulator: Added sensor #1 temp_hum online=True temp_c=23.8 humidity=49
+2026-08-06 14:32:06,685 INFO tools.subghz_sim.simulator: Simulator on /dev/ttyUSB0 closed
+```
+
+Worth knowing:
+
+- **It appends**, and missing directories are created. The path is yours and
+  stays the same between runs, so truncating would silently throw away the
+  previous session — exactly the capture you want when comparing a working
+  bench against a broken one. The `Simulator active` / `Simulator on … closed`
+  pair brackets each session, so runs stay separable in one file.
+- **Typed REPL lines and `list` output are not in it.** Only logged records go
+  to the file, and every command that changes something logs what it did — so
+  the file records what actually reached the wire rather than what was typed at
+  it.
+- **Scenario runs need no flag.** Under `!SubghzSim` these same records already
+  reach the run's `.tool.log` and `.combined.log` through the scenario's logging
+  (see the [Log Files](../../README.md#log-files) section) — `--log-file` is for
+  driving the REPL by hand.
 
 ### Commands
 
@@ -159,6 +209,8 @@ xxd < /dev/pts/4                              # frames appear as they are sent
 | Symptom | Likely cause |
 | --- | --- |
 | `could not open serial port …` | Wrong device path, or the port is held by another process (a REPL still running, a serial monitor) |
+| `could not open log file …` | `--log-file` points somewhere unwritable, or a path component exists as a file rather than a directory |
+| The `--log-file` has entries from an older run | It appends by design — the `Simulator active` line marks where this session starts |
 | Nothing arrives at the gateway | Baud mismatch, or TX/RX not crossed |
 | Gateway sees a sensor appear and vanish | The scenario's `duration_s` elapsed and the link closed, stopping the heartbeat |
 | A `temp_hum` value never changes | It was set explicitly, which pins it — `list` shows `(manual)` |

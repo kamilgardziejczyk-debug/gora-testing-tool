@@ -77,6 +77,7 @@ def _log_file_names(session: "LogSession | None") -> list[tuple[str, str]]:
     return [
         ("Tool log", session.tool_path.name),
         ("DUT log", session.device_path.name),
+        ("MQTT log", session.mqtt_path.name),
         ("Combined log", session.combined_path.name),
     ]
 

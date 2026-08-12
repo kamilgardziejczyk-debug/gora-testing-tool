@@ -43,6 +43,26 @@ if [ -n "${GH_PAT:-}" ] && [ -n "${GH_REPO:-}" ]; then
     echo "[entrypoint] Registering runner '${RUNNER_NAME}' (labels: ${RUNNER_LABELS}) for ${GH_REPO}"
 
     cd "$RUNNER_DIR"
+
+    # A container restart replays this script against the writable layer the
+    # previous run left behind, where a successful ./config.sh has persisted
+    # .runner/.credentials. config.sh then refuses outright ("Cannot
+    # configure the runner because it is already configured") - --replace
+    # only settles a server-side name collision, not a local config - so the
+    # entrypoint would exit 1 and --restart unless-stopped would spin the
+    # container forever, with `docker exec` rejected the whole time. The
+    # TERM/INT traps below clear this on a graceful stop; this covers the
+    # cases they can't (host reboot, SIGKILL after the stop timeout, run.sh
+    # crashing). De-register politely so the old registration doesn't linger
+    # server-side, and fall back to deleting the files when those credentials
+    # no longer work (runner already removed upstream, rotated PAT) - either
+    # way --replace re-creates the registration below.
+    if [ -f .runner ]; then
+        echo "[entrypoint] Stale runner config found - clearing before re-registering"
+        ./config.sh remove --token "$(fetch_token)" >/dev/null 2>&1 \
+            || rm -f .runner .runner_migrated .credentials .credentials_rsaparams
+    fi
+
     ./config.sh --url "https://github.com/${GH_REPO}" \
         --token "$(fetch_token)" \
         --name "$RUNNER_NAME" \

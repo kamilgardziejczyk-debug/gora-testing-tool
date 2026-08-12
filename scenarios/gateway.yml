@@ -85,7 +85,7 @@ commands:
     root_ca: "../tools/mqtt_listener/certs/root-ca.pem"
     topics:
       - "$aws/things/gateway-01/shadow/update"
-      - "gora/gateway-01/subghz/#"
+      - "gora/gateway-01/journal"
 
   - !RelayControl
     name: "Start BLE Advertising"
@@ -137,7 +137,7 @@ commands:
     session: "iot"
     topic: "gora/gateway-01/subghz/#"
     validation: "count == 192"
-    timeout_s: 10
+    timeout_s: 130
 
   - !MqttDisconnect:
     name: "Close The Listener"

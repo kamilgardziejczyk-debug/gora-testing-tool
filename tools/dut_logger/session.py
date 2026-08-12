@@ -4,10 +4,12 @@ A run produces:
 
 *   `<stem>.tool.log`     - the testing tool's own log output.
 *   `<stem>.device.log`   - the DUT's serial output, timestamped.
-*   `<stem>.combined.log` - both of the above interleaved, plus test start/stop
-    markers, so DUT output can be read against the command that provoked it.
+*   `<stem>.mqtt.log`     - MQTT traffic and session lifecycle, timestamped.
+*   `<stem>.combined.log` - all of the above interleaved, plus test start/stop
+    markers, so DUT output and broker traffic can be read against the command
+    that provoked them.
 
-`<stem>` is taken from the HTML report's path, so the four artefacts of a run
+`<stem>` is taken from the HTML report's path, so the five artefacts of a run
 always share a name.
 
 Device lines are also kept in memory as they are written (see
@@ -27,12 +29,16 @@ from typing import TextIO
 
 TOOL_SUFFIX = ".tool.log"
 DEVICE_SUFFIX = ".device.log"
+MQTT_SUFFIX = ".mqtt.log"
 COMBINED_SUFFIX = ".combined.log"
 
-# Prefixes distinguishing the two sources once they are interleaved. Markers
-# carry no prefix, so they stand out as structure rather than content.
+# Prefixes distinguishing the three sources once they are interleaved, padded
+# to one width so the message text starts at the same column whichever source
+# it came from. Markers carry no prefix, so they stand out as structure rather
+# than content.
 TOOL_PREFIX = "tool"
 DEVICE_PREFIX = "dut "
+MQTT_PREFIX = "mqtt"
 
 # How many device lines stay readable in memory. A quiet run emits a few
 # hundred; the cap is set well above that so a whole scenario normally stays
@@ -67,12 +73,13 @@ class DeviceLine:
     how this tool formats its logs."""
 
 
-def log_paths(report_path: Path) -> tuple[Path, Path, Path]:
-    """The tool/device/combined log paths that pair with `report_path`."""
+def log_paths(report_path: Path) -> tuple[Path, Path, Path, Path]:
+    """The tool/device/mqtt/combined log paths that pair with `report_path`."""
     stem = report_path.parent / report_path.stem
     return (
         Path(f"{stem}{TOOL_SUFFIX}"),
         Path(f"{stem}{DEVICE_SUFFIX}"),
+        Path(f"{stem}{MQTT_SUFFIX}"),
         Path(f"{stem}{COMBINED_SUFFIX}"),
     )
 
@@ -83,12 +90,13 @@ def timestamp() -> str:
 
 
 class LogSession:
-    """Open handles to a run's three log files, safe to write from any thread.
+    """Open handles to a run's four log files, safe to write from any thread.
 
-    The device reader runs on its own thread while the scenario runner writes
-    markers from the main one, and both land in the combined log - so every
-    write takes a lock. It is an `RLock` because a caller holding it must be
-    able to log without deadlocking against itself.
+    The device reader and each MQTT client's network thread run on their own
+    threads while the scenario runner writes markers from the main one, and all
+    of them land in the combined log - so every write takes a lock. It is an
+    `RLock` because a caller holding it must be able to log without deadlocking
+    against itself.
 
     Device lines are additionally buffered in memory for `device_lines()` and
     `wait_for_device_lines()`, letting the main thread read what the reader
@@ -97,10 +105,11 @@ class LogSession:
 
     def __init__(self, report_path: Path):
         """Prepare (but do not yet open) the logs pairing with `report_path`."""
-        self.tool_path, self.device_path, self.combined_path = log_paths(report_path)
+        self.tool_path, self.device_path, self.mqtt_path, self.combined_path = log_paths(report_path)
         self._lock = threading.RLock()
         self._tool: TextIO | None = None
         self._device: TextIO | None = None
+        self._mqtt: TextIO | None = None
         self._combined: TextIO | None = None
         self._device_lines: deque[DeviceLine] = deque(maxlen=DEVICE_BUFFER_LINES)
         self._device_seq = 0
@@ -111,19 +120,20 @@ class LogSession:
         self._device_line_added = threading.Condition(self._lock)
 
     def open(self) -> None:
-        """Create the parent directory and open all three files for writing."""
+        """Create the parent directory and open all four files for writing."""
         self.tool_path.parent.mkdir(parents=True, exist_ok=True)
         self._tool = self.tool_path.open("w", encoding="utf-8")
         self._device = self.device_path.open("w", encoding="utf-8")
+        self._mqtt = self.mqtt_path.open("w", encoding="utf-8")
         self._combined = self.combined_path.open("w", encoding="utf-8")
 
     def close(self) -> None:
         """Close every open handle. Idempotent, and safe to call after a failure."""
         with self._lock:
-            for stream in (self._tool, self._device, self._combined):
+            for stream in (self._tool, self._device, self._mqtt, self._combined):
                 if stream is not None and not stream.closed:
                     stream.close()
-            self._tool = self._device = self._combined = None
+            self._tool = self._device = self._mqtt = self._combined = None
             # No more device lines are coming, so release anyone still waiting
             # for one instead of leaving them to sit out their full timeout.
             self._device_line_added.notify_all()
@@ -211,6 +221,23 @@ class LogSession:
         confused with something the DUT actually emitted.
         """
         self.write_device(f"[no-dut] {text}")
+
+    def write_mqtt(self, line: str) -> None:
+        """Record one line of MQTT traffic or lifecycle, in mqtt + combined.
+
+        Written straight from the listener's network thread as messages arrive,
+        so the combined log orders broker traffic against the DUT output and the
+        command markers around it - which is what tells "the gateway never
+        published" apart from "it published while a later check was looking".
+
+        Not buffered in memory like device lines are: `!MqttExpect` reads its
+        messages from the listener's own queue, so a second copy here would be
+        a second source of truth for the same assertion.
+        """
+        stamped = f"[{timestamp()}] {line}"
+        with self._lock:
+            self._write(self._mqtt, stamped)
+            self._write(self._combined, f"[{timestamp()}] {MQTT_PREFIX} | {line}")
 
     def write_marker(self, text: str) -> None:
         """Record a test start/stop marker. Combined log only, by design.

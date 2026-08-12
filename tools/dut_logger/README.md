@@ -9,19 +9,20 @@ all?"), and as the API `main.py` uses to log a real run.
 
 ## What a run produces
 
-Four artefacts sharing one name, so a run's output stays together:
+Five artefacts sharing one name, so a run's output stays together:
 
 | File | Contents |
 | --- | --- |
 | `<stem>.html` | The test report (as before) |
 | `<stem>.tool.log` | The testing tool's own log output, timestamped |
 | `<stem>.device.log` | The DUT's serial output, timestamped |
-| `<stem>.combined.log` | Both of the above interleaved, **plus test markers** |
+| `<stem>.mqtt.log` | MQTT traffic and session lifecycle, timestamped |
+| `<stem>.combined.log` | All three of the above interleaved, **plus test markers** |
 
 `<stem>` comes from the report path, e.g. `results/gateway_20260730_143322`.
 `*.log` is already `.gitignore`d.
 
-The two single-source logs stay faithful to their one source; the combined log
+The three single-source logs stay faithful to their one source; the combined log
 is the one that gains structure:
 
 ```
@@ -36,6 +37,10 @@ is the one that gains structure:
 [14:33:23.520] --- CMD 2/8 END: FAIL (0.30s): no BLE peripheral advertising ... ---
 [14:33:23.529] --- SCENARIO END: 1/2 passed in 0.70s ---
 ```
+
+The source prefixes are padded to one width (`tool` / `dut ` / `mqtt`), so the
+message text starts at the same column whichever source produced it. Markers
+carry no prefix at all, which is what makes them scannable as structure.
 
 A `FAIL` marker carries the error, so you can find the DUT output immediately
 before a failure without cross-referencing the report.
@@ -96,9 +101,32 @@ python main.py -t scenarios/gateway.yml --dut-log /dev/ttyACM0 --dut-log-baud 92
 
 The CLI flag exists because the console's device path is a property of the test
 *node*, not the test — a scenario shared across benches shouldn't have one
-node's path baked in. With neither set, the run still produces all three logs;
+node's path baked in. With neither set, the run still produces all four logs;
 `device.log` just says no console was configured, so an empty one is never
 ambiguous.
+
+## MQTT traffic
+
+`mqtt.log` is filled by [`mqtt_listener`](../mqtt_listener/README.md), which
+`main.py` hands this session to for every `!MqttSubscribe` in a scenario. It
+needs no configuration and no hardware: a scenario that opens no broker session
+just leaves the file empty. Every line names the session's `client_id`, because
+one file carries all of a run's sessions:
+
+```
+[14:33:40.882] gateway-01-listener  connect  -> a3k1...iot.eu-west-1.amazonaws.com:8883
+[14:33:41.006] gateway-01-listener  connect  <- CONNACK from a3k1...iot.eu-west-1.amazonaws.com
+[14:33:41.104] gateway-01-listener  sub      -> $aws/things/gateway-01/shadow/update (qos=1)
+[14:33:41.492] gateway-01-listener  rx       <- $aws/things/gateway-01/shadow/update  {"state":{"reported":{"rssi":-31}}}
+[14:33:52.310] gateway-01-listener  close    -- disconnected from a3k1...iot.eu-west-1.amazonaws.com
+```
+
+`rx` lines are written as each message arrives and before it reaches the buffer
+a check reads from, so the file is a full record of what the broker carried —
+including messages no `!MqttExpect` ever consumed, and any dropped once that
+buffer is full. `!!` marks the failure cases worth grepping for: a refused
+connection, a missing CONNACK, a connection dropped mid-run (which is what a
+second client stealing the `client_id` looks like from here).
 
 ## Standalone capture
 
@@ -109,9 +137,10 @@ python tools/dut_logger/dut_logger.py --port /dev/ttyACM0 --duration 10
 python tools/dut_logger/dut_logger.py --port /dev/ttyACM0            # until Ctrl-C
 ```
 
-Writes the same three log files (derived from `--out`, default
+Writes the same log files (derived from `--out`, default
 `results/dut_capture.html`; the `.html` itself is not written) and prints where
-they went. Exit codes: `0` clean, `2` the port could not be opened.
+they went. Exit codes: `0` clean, `2` the port could not be opened. Nothing here
+touches MQTT, so the `mqtt.log` it leaves behind is always empty.
 
 ## In Docker
 
@@ -145,18 +174,20 @@ logger.start()                     # raises ConnectionError if it can't open
 session.write_marker("CMD 1/2 START: Flash (!ProgramJlink)")
 session.write_device("a line as if from the DUT")
 session.write_tool("a line as if from the tool")
+session.write_mqtt("a line as if from a broker session")
 session.write_device_note("why the device log is empty")
 
 logger.stop()
 detach(handler)
 session.close()
 
-session.tool_path, session.device_path, session.combined_path
+session.tool_path, session.device_path, session.mqtt_path, session.combined_path
 ```
 
-`LogSession` is safe to write from any thread — the reader thread and the
-scenario runner both write to the combined log — and every line is flushed as
-it is written, so a run killed mid-scenario still leaves a usable log.
+`LogSession` is safe to write from any thread — the reader thread, each MQTT
+client's network thread, and the scenario runner all write to the combined log —
+and every line is flushed as it is written, so a run killed mid-scenario still
+leaves a usable log.
 
 ### Reading captured device lines
 

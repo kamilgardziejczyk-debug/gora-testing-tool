@@ -335,23 +335,35 @@ The tool is executed using `main.py`. You specify the path to a scenario YAML fi
 ### Test Report
 
 Every run writes an HTML report once it finishes, whether every command passed or a command failed and stopped the scenario early — the report always reflects whatever actually ran. It contains:
-*   The scenario file name and when the run started, with links to the log files below.
-*   One row per executed command: its `name`, its tag (click to expand its exact YAML source), the `validation` expression it was checked against and what was actually observed (blank for commands with no assertion of their own, e.g. anything other than `!MqttExpect`), how long it took, and PASS/FAIL (with the error message, if it failed).
+*   A masthead with the scenario file name, when the run started, the elapsed time, the number of checks, and links to the log files below.
+*   A pass tally — `passed / total` with a progress meter, coloured green when the run is clean and red when anything failed.
+*   One row per executed command: its `name`, its tag (click to expand its exact YAML source), the `validation` expression it was checked against and what was actually observed (blank for commands with no assertion of their own, e.g. anything other than `!MqttExpect`), how long it took, and a PASS/FAIL chip (with the error message, if it failed). Failed rows are tinted so they stand out when scanning.
 *   The total wall-clock time for the run, under the table.
+
+The report is a single self-contained file with no external assets, and follows the light/dark preference of whatever opens it.
 
 A command that fails stops the scenario at that point, same as before this existed — the report is generated either way, so a partial run still leaves a record of what happened.
 
 ### Log Files
 
-Alongside the report, every run writes three logs sharing its name — so `results/gateway_20260730_143322.html` comes with:
+Alongside the report, every run writes four logs sharing its name — so `results/gateway_20260730_143322.html` comes with:
 
 | File | Contents |
 | --- | --- |
 | `gateway_20260730_143322.tool.log` | The tool's own log output, timestamped |
 | `gateway_20260730_143322.device.log` | The DUT's serial console, timestamped |
-| `gateway_20260730_143322.combined.log` | Both interleaved, plus per-command `START`/`END` markers carrying PASS/FAIL |
+| `gateway_20260730_143322.mqtt.log` | Every MQTT message received, plus each session's connect/subscribe/disconnect, timestamped |
+| `gateway_20260730_143322.combined.log` | All three interleaved, plus per-command `START`/`END` markers carrying PASS/FAIL |
 
-The combined log is the one to read when a test fails: it shows what the DUT was saying at the moment a command failed, without cross-referencing timestamps by hand.
+The combined log is the one to read when a test fails: it shows what the DUT was saying and what the broker carried at the moment a command failed, without cross-referencing timestamps by hand. Each line is tagged with the source it came from:
+
+```
+[14:33:41.204] --- CMD 7/9 START: shadow update arrives (!MqttExpect) ---
+[14:33:41.318] dut  | gora: publishing shadow update
+[14:33:41.492] mqtt | gateway-01-listener  rx       <- $aws/things/gateway-01/shadow/update  {"state":{"reported":{"rssi":-31}}}
+[14:33:41.494] tool | INFO wrappers.mqtt_expect_wrapper: MqttExpect: session 'iot' topic '$aws/things/gateway-01/shadow/update' satisfied 'count == 1' (got 1)
+[14:33:41.495] --- CMD 7/9 END: PASS (0.29s) ---
+```
 
 Capturing the DUT console needs either `--dut-log` (above) or a top-level `dut_log` block in the scenario:
 
@@ -367,7 +379,9 @@ Notes:
 *   The tool log starts before the scenario is parsed, so a scenario that fails to load still leaves a log explaining why — as does a run that dies part-way, since every line is flushed as it is written.
 *   A DUT that resets mid-scenario (`!ProgramJlink`, a BLE write that reboots it) makes its USB console disappear and re-enumerate. That is handled: the reader reattaches and notes both events in the combined log. Output emitted while the port was down is lost, and a bench with several CDC devices may need a stable `/dev/serial/by-id/...` path.
 *   If the console **cannot be opened when the run starts**, the scenario aborts before any command executes rather than finishing with a convincing but empty device log.
-*   With no DUT console configured, all three logs are still written; `device.log` says so explicitly, so an empty one is never ambiguous.
+*   With no DUT console configured, all four logs are still written; `device.log` says so explicitly, so an empty one is never ambiguous. A run with no [`!MqttSubscribe`](#mqttsubscribe) simply leaves `mqtt.log` empty.
+*   `mqtt.log` records every message the broker delivered, written as it arrives and *before* it is buffered for a check — so it stays a complete record whether or not an [`!MqttExpect`](#mqttexpect) consumed the message, and even for traffic no check ever looked at. That is what separates "the gateway never published" from "it published, but a later check was looking at the wrong topic". Payload line breaks are escaped as `\n` to keep one message per line.
+*   Every `mqtt.log` line carries the session's `client_id`, since a scenario can hold several broker sessions open at once and they all share the one file.
 
 *   Captured device lines are also kept in memory (the last 5000) as well as written to disk, so a scenario can assert on what the DUT said with [`!DutLogExpect`](#dutlogexpect) instead of only reading the log afterwards.
 
@@ -536,6 +550,8 @@ Non-blocking: it returns as soon as the broker confirms every subscription, then
 *   `qos`: (Optional) `0` or `1`, applied to every topic in `topics`. Defaults to `1`. IoT Core does not support QoS 2.
 *   `connect_timeout_s`: (Optional) Seconds to wait for the broker's connection acknowledgement. Defaults to `10`.
 
+Everything the session receives goes to the run's [`mqtt.log` and `combined.log`](#log-files) as it arrives, whether or not a later `!MqttExpect` counts it.
+
 ### `!MqttExpect`
 Asserts a message-count expression against one `topic` filter within a `!MqttSubscribe` session, e.g. `validation: "count == 2"`. Place it **after** the command that triggers the device, so the assertion covers what that action actually produced.
 
@@ -550,7 +566,7 @@ Does not close the session, so a scenario can `!MqttExpect` more than once again
 *   `validation`: (Required) A `"count <op> <n>"` expression, where `<op>` is one of `==`, `!=`, `>=`, `<=`, `>`, `<` and `<n>` is a non-negative integer. Examples: `"count == 2"`, `"count >= 1"`, `"count < 5"`.
 *   `timeout_s`: (Optional) Seconds to wait for messages to arrive. Defaults to `10`.
 
-A failed assertion **fails the scenario**, logging every message counted for this check, plus (if it differs) everything else buffered on the session across every topic, to make it debuggable without touching the broker directly.
+A failed assertion **fails the scenario**, logging every message counted for this check, plus (if it differs) everything else buffered on the session across every topic, to make it debuggable without touching the broker directly. `mqtt.log` is the wider view when that isn't enough: it holds everything the broker delivered on the session, with timestamps to compare against the DUT's own output in `combined.log`.
 
 ### `!MqttDisconnect`
 Closes a session opened by `!MqttSubscribe`. Optional — the runner closes any session still open when the scenario ends, including after a failure. Use it to free a client id partway through a scenario, for example so the device can reconnect with it.
