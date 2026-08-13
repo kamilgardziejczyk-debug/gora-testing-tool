@@ -657,16 +657,19 @@ Needs a shell UART to be configured (`--dut-cli`, or a `dut_cli` block). A scena
 *   `name`: (Optional) Descriptive log name.
 *   `command`: (Required) The line typed at the shell, e.g. `"gora status"`.
 *   `validation`: (Optional) A Python regular expression, *searched* against the reply (it need not match the whole reply, and may span lines with an explicit `\n`). Omit it to run a command for its effect and just log what came back.
-*   `timeout_s`: (Optional) Seconds to wait for the shell's prompt to come back after the command. Defaults to `3`.
+*   `timeout_s`: (Optional) Seconds to wait for the DUT's reply. Defaults to `3`. Raise it for a command the device takes real time over (clearing a journal, a flash erase) — the command is sent once and this is how long its answer is waited for, never a budget for re-sending it.
 
-Four things to know:
+Five things to know:
 
 *   **Use single quotes around the validation**, for the same YAML reason as `!DutLogExpect`: `"...\s..."` is a scanner error, `'...\s...'` passes the backslash through untouched.
+*   **The reply is framed from the command's own echo**, and ends at the following prompt. Requiring the echo is what makes `timeout_s` mean anything: a prompt the DUT had already sent — it was sitting at one before the port was opened, or the shell's sync answer arrived as two — lands just after the command goes out and would otherwise be read as that command's terminator, returning an empty reply in ~0s with the timeout never spent. This assumes the firmware echoes, i.e. Zephyr's default `CONFIG_SHELL_ECHO=y`; with echo disabled every command fails with "the DUT never echoed ...". The port is also drained to silence before each command, so a reply always starts from an empty wire.
 *   **The reply is matched, not the DUT's log output.** Zephyr's logging backend usually shares the shell UART, so `<inf>` lines can land in the middle of a response; they are separated out and never matched against (a failure quotes them separately, since they often explain the reply). The command's own echo and the trailing prompt are stripped too, so a pattern is written against what the command actually printed.
 *   **One shell serves the whole run.** It is opened by the first `!DutCli` — not at start-up, so a scenario may flash the DUT first — and closed when the run ends. If the port has gone when a command is sent (a DUT that reset since the last one), it is reopened once and the command retried.
 *   **A command the shell refuses fails the scenario** regardless of `validation` — `command not found`, `wrong parameter count` and friends mean the scenario is written against a firmware that does not have this command, which no pattern could sensibly assert against. A command that *ran* and returned news the test dislikes is an ordinary `validation` failure instead.
 
-A failed match **fails the scenario**, quoting the reply and any log output that arrived while the command ran. Unlike `!DutLogExpect` there is no waiting or retrying: the shell answers immediately, so a state that has not settled yet is a mismatch. Poll for one with the DUT console (`!DutLogExpect`) or a `!Loop`, or bound it by placing the check after a `wait_after_s`.
+A failed match **fails the scenario**, quoting the reply and any log output that arrived while the command ran. A reply that never comes fails differently, and says which half broke: "the DUT never echoed *x*" (it may not have received the command at all) versus "*x* was echoed but no prompt followed" (it is still working on it), the latter quoting however much of the reply did arrive.
+
+Unlike `!DutLogExpect`, `timeout_s` is not a poll budget — the command is sent exactly once and the reply waited for, since a shell command may have side effects and re-issuing `gora reset` or a provisioning write would execute it twice. A state that has not settled yet is therefore a mismatch, not something to wait out. Poll for one with the DUT console (`!DutLogExpect`) or a `!Loop`, or bound it by placing the check after a `wait_after_s`.
 
 ### `!Loop`
 Runs nested scenario commands sequentially multiple times.

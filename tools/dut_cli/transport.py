@@ -30,6 +30,14 @@ READ_TIMEOUT_S = 0.05
 # re-enumeration takes a second or two; polling faster only spins the CPU.
 RECONNECT_DELAY_S = 0.5
 
+# How long the port must stay silent for `drain_idle` to call it quiet, and how
+# long it may spend trying. A prompt still in flight when a command is sent
+# would otherwise be read back as that command's terminator, ending the read
+# before the DUT has answered - so it is worth a few tens of milliseconds per
+# command to start from a genuinely empty wire.
+DRAIN_QUIET_S = 0.05
+DRAIN_MAX_S = 0.5
+
 
 class SerialTransport:
     """A serial port to the DUT's shell, reopened if the DUT re-enumerates."""
@@ -88,6 +96,35 @@ class SerialTransport:
         pending = b""
         while self._serial.in_waiting:
             pending += self._serial.read(self._serial.in_waiting)
+        return pending.decode("utf-8", errors="replace")
+
+    def drain_idle(self, quiet_s: float = DRAIN_QUIET_S, max_s: float = DRAIN_MAX_S) -> str:
+        """Discard input until the port has stayed silent for `quiet_s`.
+
+        Stronger than `drain()`, which only takes what has already landed: a
+        prompt the DUT sent microseconds ago is still in flight at that instant
+        and arrives right after the next command goes out, where it reads as
+        that command's terminator and yields an empty response in ~0s. Waiting
+        for silence instead means a command is always sent onto an empty wire.
+
+        Gives up after `max_s` rather than waiting out a DUT that is talking
+        continuously (a reboot loop, a chatty log backend): the caller's own
+        framing has to cope with that case regardless.
+        """
+        if not self.is_open:
+            return ""
+
+        deadline = time.monotonic() + max_s
+        pending = b""
+        last_arrival = time.monotonic()
+        while time.monotonic() < deadline:
+            if self._serial.in_waiting:
+                pending += self._serial.read(self._serial.in_waiting)
+                last_arrival = time.monotonic()
+            elif time.monotonic() - last_arrival >= quiet_s:
+                break
+            else:
+                time.sleep(0.005)
         return pending.decode("utf-8", errors="replace")
 
     def write_line(self, text: str, newline: str = "\r\n") -> None:

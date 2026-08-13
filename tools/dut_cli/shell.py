@@ -134,23 +134,66 @@ class DutShell:
         there is about a command that hung or a DUT that reset mid-answer.
         """
         budget = self.timeout_s if timeout_s is None else timeout_s
-        discarded = self._transport.drain()
+        discarded = self._transport.drain_idle()
         if discarded.strip():
             LOGGER.debug("DutCli: discarded %r before sending %r", discarded, command)
 
         self._log(f"-> {command}")
         started = time.monotonic()
         self._transport.write_line(command, self.newline)
-        text, found = self._transport.read_until(self.prompt, started + budget, strip_ansi)
+        text, found = self._transport.read_until(self._terminator(command), started + budget, strip_ansi)
         duration_s = time.monotonic() - started
 
-        response = self._build_response(command, text, duration_s)
+        response = self._build_response(command, self._from_echo(text, command), duration_s)
         if not found:
-            raise TimeoutError(
-                f"DutCli: no prompt after '{command}' within {budget}s "
-                f"(read {len(response.lines)} response line(s) so far: {response.text!r})"
-            )
+            raise TimeoutError(self._timeout_message(command, text, budget, response))
         return response
+
+    def _terminator(self, command: str) -> re.Pattern[str]:
+        """What ends this command's response: its own echo, then a prompt.
+
+        The prompt alone is not enough. A prompt the DUT had already sent - it
+        was sitting at one before the port was opened, or `open()`'s sync
+        answer arrived as two - reaches the reader just after the command goes
+        out and satisfies a bare prompt match immediately, returning an empty
+        response in ~0s with the caller's timeout never spent. Requiring the
+        echo first means the read cannot end before the DUT has acknowledged
+        the command, which is the earliest point a reply could exist.
+        """
+        return re.compile(re.escape(command.strip()) + r"[\s\S]*?" + self.prompt.pattern)
+
+    @staticmethod
+    def _from_echo(text: str, command: str) -> str:
+        """`text` from the command's echo onwards, dropping earlier noise.
+
+        Anything before the echo belongs to whatever the DUT was doing before
+        this command - a stale prompt, a log line - and is not part of the
+        reply.
+        """
+        cleaned = strip_ansi(text)
+        at = cleaned.find(command.strip())
+        return cleaned if at < 0 else cleaned[at:]
+
+    def _timeout_message(self, command: str, text: str, budget: float, response: Response) -> str:
+        """Explain a command that never came back, saying how far it got.
+
+        Whether the echo was seen separates "the DUT never heard this" from
+        "it heard it and is still working", which need different fixes - and
+        an echo that never arrives on a firmware with `CONFIG_SHELL_ECHO`
+        disabled is the one case this framing cannot serve.
+        """
+        if command.strip() not in strip_ansi(text):
+            return (
+                f"DutCli: the DUT never echoed '{command}' within {budget}s, so it may not have "
+                f"received it. Check the port is the shell UART and that CONFIG_SHELL_ECHO is "
+                f"enabled - this tool frames a reply from the command's echo. "
+                f"Received: {strip_ansi(text)!r}"
+            )
+        return (
+            f"DutCli: '{command}' was echoed but no prompt followed within {budget}s, so the DUT "
+            f"is still working on it or stopped part-way "
+            f"(read {len(response.lines)} response line(s) so far: {response.text!r})"
+        )
 
     def _build_response(self, command: str, raw: str, duration_s: float) -> Response:
         """Turn what arrived into a `Response`, minus the shell's own noise."""
