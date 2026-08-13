@@ -269,12 +269,21 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
 *   At the end, it prints each node's container IP (from `docker inspect`
     on that node) alongside its SSH target.
 
-One-time setup on a plain Linux Docker install (Docker Desktop on Mac/Windows
-already bundles this):
+**QEMU emulation is registered for you.** Before building, the script checks
+whether the active buildx builder reports `linux/arm64` and, if it doesn't,
+runs the privileged `tonistiigi/binfmt` container to register the handlers:
 
 ```bash
 docker run --privileged --rm tonistiigi/binfmt --install arm64
 ```
+
+This reads like one-time setup but isn't — the handlers live in the kernel's
+`binfmt_misc`, which is cleared by every reboot, so on a plain Linux Docker
+install it typically re-runs after each one. Without it the build fails
+several minutes in, at the first `RUN` step, with a bare
+`exec /bin/sh: exec format error` — every preceding layer comes from cache, so
+it looks like the Dockerfile broke rather than the emulation. Docker Desktop
+(Mac/Windows) bundles the emulation, so the step never triggers there.
 
 If a target Pi doesn't have Docker yet (e.g. a freshly imaged SD card), the
 script installs it automatically via the official `get.docker.com` script

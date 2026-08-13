@@ -37,10 +37,12 @@ set -euo pipefail
 #              default, since every Pi 4 test node has both; a serial
 #              device path varies per node, so it isn't guessed for you.
 #
-# Requires Docker Buildx with QEMU emulation registered for arm64. One-time
-# setup on a plain Linux Docker install:
-#   docker run --privileged --rm tonistiigi/binfmt --install arm64
-# Docker Desktop (Mac/Windows) bundles this already.
+# Requires Docker Buildx. QEMU emulation for arm64 is registered automatically
+# when the active builder doesn't already report it - which is most reboots on
+# a plain Linux Docker install, since binfmt_misc registrations don't survive
+# one. That step runs a privileged container (tonistiigi/binfmt). Docker
+# Desktop (Mac/Windows) bundles the emulation already, so it never triggers
+# there.
 # ---------------------------------------------------------------------------
 
 if [ "$#" -lt 1 ]; then
@@ -100,11 +102,37 @@ docker buildx version &>/dev/null \
     || error "Docker Buildx is required to cross-build for ${PLATFORM}. Install/enable it, then re-run."
 info "docker buildx: OK"
 
-if ! docker buildx inspect --bootstrap 2>&1 | grep -q "${PLATFORM}"; then
-    warn "The active buildx builder doesn't report ${PLATFORM} support."
-    warn "If the build below fails, register QEMU emulation once with:"
-    warn "  docker run --privileged --rm tonistiigi/binfmt --install arm64"
-fi
+# Emulating arm64 on an x86_64 host needs QEMU handlers registered with the
+# kernel's binfmt_misc. Those registrations are **lost on every reboot**, so
+# despite reading like one-time setup this recurs - which is why it is done
+# here rather than warned about. Re-registering is idempotent and takes a
+# second; the alternative is a build that dies minutes in at the first RUN
+# step with a bare "exec format error".
+ensure_arm64_emulation() {
+    if docker buildx inspect --bootstrap 2>&1 | grep -q "${PLATFORM}"; then
+        info "QEMU emulation: ${PLATFORM} available"
+        return
+    fi
+
+    warn "The active buildx builder doesn't report ${PLATFORM} support - registering QEMU emulation now."
+    docker run --privileged --rm tonistiigi/binfmt --install arm64 >/dev/null 2>&1 || error \
+        "Could not register QEMU emulation for arm64. Run it by hand, then re-run this script:
+  docker run --privileged --rm tonistiigi/binfmt --install arm64"
+
+    # Whether buildx now *reports* arm64 depends on when the daemon last
+    # enumerated its workers, but binfmt_misc applies the registration at exec
+    # time regardless - so a builder that still doesn't list it is logged and
+    # built with anyway, rather than blocking a build that would have worked.
+    if docker buildx inspect --bootstrap 2>&1 | grep -q "${PLATFORM}"; then
+        info "QEMU emulation registered: ${PLATFORM} now available"
+    else
+        warn "QEMU emulation registered, but buildx still doesn't list ${PLATFORM}."
+        warn "Continuing anyway - the kernel applies it at exec time. If the build below"
+        warn "still fails with 'exec format error', restart Docker and re-run."
+    fi
+}
+
+ensure_arm64_emulation
 
 [ -n "${GH_PAT:-}" ] || error "GH_PAT env var must be set to a GitHub PAT (see the header of this script for required permissions)."
 
@@ -199,7 +227,12 @@ done
 # ---------------------------------------------------------------------------
 section "Building ${IMAGE_NAME}:${TAG} for ${PLATFORM}"
 
-docker buildx build --platform "${PLATFORM}" -t "${IMAGE_NAME}:${TAG}" --load "${REPO_DIR}"
+if ! docker buildx build --platform "${PLATFORM}" -t "${IMAGE_NAME}:${TAG}" --load "${REPO_DIR}"; then
+    error "The ${PLATFORM} build failed. If the failure above is 'exec format error' on a RUN
+  step, QEMU emulation for arm64 is not active on this machine even though this script tried
+  to register it. Restart Docker, then re-run:
+  docker run --privileged --rm tonistiigi/binfmt --install arm64"
+fi
 
 info "Build complete (emulated arm64 build on this machine can take a while - this is expected)"
 
