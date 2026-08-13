@@ -563,10 +563,32 @@ Does not close the session, so a scenario can `!MqttExpect` more than once again
 *   `name`: (Optional) Descriptive log name.
 *   `session`: (Required) Session name given to `!MqttSubscribe`.
 *   `topic`: (Required) Which topic filter (out of the session's `topics`) to count messages on.
+*   `count_by`: (Optional) A field name in the payload. Counts *distinct values of that field* instead of messages — see below. Omit it to count messages, as before.
 *   `validation`: (Required) A `"count <op> <n>"` expression, where `<op>` is one of `==`, `!=`, `>=`, `<=`, `>`, `<` and `<n>` is a non-negative integer. Examples: `"count == 2"`, `"count >= 1"`, `"count < 5"`.
 *   `timeout_s`: (Optional) Seconds to wait for messages to arrive. Defaults to `10`.
 
-A failed assertion **fails the scenario**, logging every message counted for this check, plus (if it differs) everything else buffered on the session across every topic, to make it debuggable without touching the broker directly. `mqtt.log` is the wider view when that isn't enough: it holds everything the broker delivered on the session, with timestamps to compare against the DUT's own output in `combined.log`.
+#### Counting samples instead of messages (`count_by`)
+
+A device that batches makes the message count meaningless. The gateway's journal uploads everything it has accumulated on a fixed 120s timer, so the same 192 sub-GHz samples might arrive as one publish or five — the split is a property of that timer, not of the gateway forwarding correctly. `count_by` moves the count onto the payload's own items:
+
+```yaml
+  - !MqttExpect:
+    name: "Collect Simulated Sensors Messages"
+    session: "iot"
+    topic: "gora/gateway-01/journal"
+    count_by: "seq"          # count distinct 'seq' values, not messages
+    validation: "count == 192"
+    timeout_s: 150           # must clear a whole 120s upload period
+```
+
+Each payload is parsed as JSON and may be a **single object or an array of them**, so the batch size never matters. Counting *distinct* values has a second benefit: QoS 1 is at-least-once, so a redelivered batch would otherwise inflate the count and let a broken run pass. Notes:
+
+*   Pick a field that is **unique per item** — a journal `seq` is ideal. A field with repeats (`type`, `id`) would collapse them and count far fewer than arrived.
+*   A payload that is not JSON, an item without the field, or a field holding an object/array **fails the check with that payload quoted**. It deliberately does not count zero: a silent zero is indistinguishable from "the device published nothing", which is the one wrong conclusion this check must never invite.
+*   When every counted value is an integer, a failure also reports the range that arrived and how many values are **missing inside it** — with a monotonic counter that says *which* samples were dropped, not just how many.
+*   `timeout_s` has to cover the device's whole publish period, not just its transfer time. Samples can be stored moments after an upload fires, leaving a full period's wait for the next one.
+
+A failed assertion **fails the scenario**, logging every message counted for this check, plus (if it differs) everything else buffered on the session across every topic, to make it debuggable without touching the broker directly. Quoted payloads are abbreviated past 300 characters, since a few batches of 48 samples would otherwise bury the failure itself; `mqtt.log` holds them in full, alongside timestamps to compare against the DUT's own output in `combined.log`.
 
 ### `!MqttDisconnect`
 Closes a session opened by `!MqttSubscribe`. Optional — the runner closes any session still open when the scenario ends, including after a failure. Use it to free a client id partway through a scenario, for example so the device can reconnect with it.

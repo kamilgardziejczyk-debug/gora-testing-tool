@@ -7,6 +7,7 @@ importable as an API, which is how `main.py` captures a scenario run.
 from .handler import LogSessionHandler, attach, detach
 from .reader import DEFAULT_BAUD, DutLogger
 from .session import (
+    CLI_SUFFIX,
     COMBINED_SUFFIX,
     DEVICE_BUFFER_LINES,
     DEVICE_SUFFIX,
@@ -18,6 +19,7 @@ from .session import (
 )
 
 __all__ = [
+    "CLI_SUFFIX",
     "COMBINED_SUFFIX",
     "DEFAULT_BAUD",
     "DEVICE_BUFFER_LINES",

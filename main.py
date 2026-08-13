@@ -338,10 +338,11 @@ def main() -> None:
         if dut_logger is not None:
             dut_logger.stop()
         LOGGER.info(
-            "Wrote logs to %s, %s, %s, %s",
+            "Wrote logs to %s, %s, %s, %s, %s",
             session.tool_path,
             session.device_path,
             session.mqtt_path,
+            session.cli_path,
             session.combined_path,
         )
         session.close()
