@@ -79,6 +79,16 @@ class DutShell:
         self._log_session = log_session
         self._transport = SerialTransport(port, baud)
 
+    @property
+    def is_open(self) -> bool:
+        """Whether the port is currently open.
+
+        Lets a long-lived caller (a scenario run holding one shell across many
+        commands) open it on first use and reopen it after a DUT reset, without
+        reaching into the transport.
+        """
+        return self._transport.is_open
+
     def __enter__(self) -> "DutShell":
         self.open()
         return self

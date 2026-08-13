@@ -47,6 +47,10 @@ dut_log:
   port: "/dev/ttyACM0"
   baud: 115200
 
+dut_cli:
+  port: "/dev/ttyACM1"
+  baud: 115200
+
 commands:
   - !ProgramJlink:
     name: "Flash The Device"
@@ -55,6 +59,12 @@ commands:
     speed: 4000
     firmware: "zephyr.hex"
     wait_after_s: 9
+
+  - !DutCli:
+    name: "Gateway Reports Itself Online"
+    command: "journal clear"
+    validation: 'Journal cleared'
+    timeout_s: 60
 
   - !RelayControl
     name: "Start BLE Advertising"

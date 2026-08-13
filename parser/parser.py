@@ -4,9 +4,11 @@ import logging
 
 import yaml
 
+from tools.dut_cli import DEFAULT_BAUD as DEFAULT_CLI_BAUD
 from tools.dut_logger import DEFAULT_BAUD as DEFAULT_DUT_BAUD
 from wrappers import (
     BleCentralWrapper,
+    DutCliWrapper,
     DutLogExpectWrapper,
     ExecuteCommandWrapper,
     MqttDisconnectWrapper,
@@ -35,6 +37,7 @@ WRAPPER_BY_TAG = {
     "MqttExpect": MqttExpectWrapper,
     "MqttDisconnect": MqttDisconnectWrapper,
     "DutLogExpect": DutLogExpectWrapper,
+    "DutCli": DutCliWrapper,
 }
 
 
@@ -65,18 +68,38 @@ class DutLogConfig(NamedTuple):
     baud: int
 
 
-def _parse_dut_log(document: yaml.Node) -> DutLogConfig | None:
-    """Extract the optional top-level `dut_log` mapping, or None if absent."""
+class DutCliConfig(NamedTuple):
+    """A scenario's top-level `dut_cli:` settings.
+
+    Separate from `DutLogConfig` because they name two different UARTs on the
+    same DUT - the console it talks *out* of, and the shell it listens *on* -
+    and a bench that has one need not have the other.
+    """
+
+    port: str
+    baud: int
+
+
+def _parse_serial_block(
+    document: yaml.Node,
+    block_name: str,
+    default_baud: int,
+) -> tuple[str, int] | None:
+    """Extract an optional top-level `<block_name>: {port, baud}` mapping.
+
+    Shared by `dut_log` and `dut_cli` so the two are configured identically:
+    the only thing that differs between them is which UART they name.
+    """
     if not isinstance(document, yaml.MappingNode):
         return None
 
-    dut_log_node = _mapping_get(document, "dut_log")
-    if not isinstance(dut_log_node, yaml.MappingNode):
+    block_node = _mapping_get(document, block_name)
+    if not isinstance(block_node, yaml.MappingNode):
         return None
 
     port: str | None = None
-    baud = DEFAULT_DUT_BAUD
-    for key_node, value_node in dut_log_node.value:
+    baud = default_baud
+    for key_node, value_node in block_node.value:
         if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
             continue
         if key_node.value == "port":
@@ -85,8 +108,20 @@ def _parse_dut_log(document: yaml.Node) -> DutLogConfig | None:
             baud = int(value_node.value)
 
     if port is None:
-        raise ValueError("dut_log: 'port' is required when a dut_log block is present")
-    return DutLogConfig(port=port, baud=baud)
+        raise ValueError(f"{block_name}: 'port' is required when a {block_name} block is present")
+    return port, baud
+
+
+def _parse_dut_log(document: yaml.Node) -> DutLogConfig | None:
+    """Extract the optional top-level `dut_log` mapping, or None if absent."""
+    parsed = _parse_serial_block(document, "dut_log", DEFAULT_DUT_BAUD)
+    return None if parsed is None else DutLogConfig(*parsed)
+
+
+def _parse_dut_cli(document: yaml.Node) -> DutCliConfig | None:
+    """Extract the optional top-level `dut_cli` mapping, or None if absent."""
+    parsed = _parse_serial_block(document, "dut_cli", DEFAULT_CLI_BAUD)
+    return None if parsed is None else DutCliConfig(*parsed)
 
 
 def _parse_iterations(loop_body: yaml.MappingNode) -> int:
@@ -169,6 +204,16 @@ class Parser:
         """
         _, document = self._load()
         return _parse_dut_log(document)
+
+    def parse_dut_cli(self) -> DutCliConfig | None:
+        """The scenario's `dut_cli:` settings, or None if it declares none.
+
+        Separate from `parse()` for the same reason as `parse_dut_log()`: the
+        shell port is a property of the run, not of any one command, so the
+        runner resolves it (and the CLI overrides) before the first command.
+        """
+        _, document = self._load()
+        return _parse_dut_cli(document)
 
     def parse(self) -> list[Wrapper]:
         document_text, document = self._load()

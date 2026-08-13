@@ -1,3 +1,3 @@
-from .parser import DutLogConfig, Parser
+from .parser import DutCliConfig, DutLogConfig, Parser
 
-__all__ = ["DutLogConfig", "Parser"]
+__all__ = ["DutCliConfig", "DutLogConfig", "Parser"]

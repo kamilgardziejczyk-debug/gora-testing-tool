@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # imported for typing only, keeping the base class dependency-free
+    from tools.dut_cli import DutShell
     from tools.dut_logger import LogSession
 
 
@@ -38,6 +39,11 @@ class Wrapper(ABC):
     report as the misconfiguration it is rather than waiting for output that
     cannot arrive. For `captures_mqtt_log` it is always set, since the MQTT log
     does not depend on any hardware being attached.
+
+    `dut_shell` is the run's shared `DutShell`, set by main.py on wrappers
+    declaring `requires_dut_cli`, and only when a shell UART is configured -
+    one shell serves the whole scenario, so commands do not each pay for
+    opening the port and re-syncing on the prompt.
     """
 
     wait_after_s: float | None = None
@@ -47,6 +53,7 @@ class Wrapper(ABC):
     validation_expected: str | None = None
     validation_actual: str | None = None
     log_session: LogSession | None = None
+    dut_shell: DutShell | None = None
 
     # Capability markers main.py checks instead of an isinstance chain, so a new
     # wrapper opts in here without main.py needing an edit for it. A wrapper
@@ -55,6 +62,7 @@ class Wrapper(ABC):
     supports_port_override: bool = False
     supports_firmware_dir_override: bool = False
     requires_dut_log: bool = False
+    requires_dut_cli: bool = False
     captures_mqtt_log: bool = False
 
     @abstractmethod

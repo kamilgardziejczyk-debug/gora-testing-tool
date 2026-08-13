@@ -5,8 +5,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from parser import DutLogConfig, Parser
+from parser import DutCliConfig, DutLogConfig, Parser
 from reporting import TestResult, generate_report
+from tools.dut_cli import DEFAULT_BAUD as DEFAULT_CLI_BAUD
+from tools.dut_cli import DutShell
 from tools.dut_logger import DEFAULT_BAUD as DEFAULT_DUT_BAUD
 from tools.dut_logger import DutLogger, LogSession, attach as attach_log_handler
 from wrappers import Wrapper, mqtt_registry, relay_cleanup_all
@@ -61,13 +63,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=f"Baud rate for --dut-log. Defaults to the scenario's value, else {DEFAULT_DUT_BAUD}.",
     )
+    argument_parser.add_argument(
+        "--dut-cli",
+        required=False,
+        default=None,
+        help="Serial port carrying the DUT's shell (e.g. /dev/ttyACM1), used by !DutCli "
+        "commands. Overrides the scenario's own 'dut_cli' block.",
+    )
+    argument_parser.add_argument(
+        "--dut-cli-baud",
+        required=False,
+        type=int,
+        default=None,
+        help=f"Baud rate for --dut-cli. Defaults to the scenario's value, else {DEFAULT_CLI_BAUD}.",
+    )
     return argument_parser.parse_args()
 
 
-def load_scenario(test_file: str) -> tuple[list[Wrapper], DutLogConfig | None]:
-    """Validate and parse a scenario into its commands and DUT log settings.
+def load_scenario(test_file: str) -> tuple[list[Wrapper], DutLogConfig | None, DutCliConfig | None]:
+    """Validate and parse a scenario into its commands and serial port settings.
 
-    Both come from one Parser so the file is read (and composed) only once.
+    All three come from one Parser so the file is read (and composed) only once.
     """
     parser = Parser(test_file)
     if not parser.validate():
@@ -75,9 +91,34 @@ def load_scenario(test_file: str) -> tuple[list[Wrapper], DutLogConfig | None]:
         raise ValueError("Passed test file is not a valid YAML file")
     LOGGER.info("YAML validation successful")
     dut_log_config = parser.parse_dut_log()
+    dut_cli_config = parser.parse_dut_cli()
     wrappers = parser.parse()
     LOGGER.info("Scenario parsing finished, executing %d commands", len(wrappers))
-    return wrappers, dut_log_config
+    return wrappers, dut_log_config, dut_cli_config
+
+
+def _merge_serial_config(
+    scenario_config: DutLogConfig | DutCliConfig | None,
+    port_arg: str | None,
+    baud_arg: int | None,
+    default_baud: int,
+    label: str,
+) -> tuple[str, int] | None:
+    """Merge a scenario's serial block with its CLI overrides, or None if neither.
+
+    The CLI port wins over the scenario's, matching how `--port` and
+    `--firmware` already override their YAML equivalents: which device path a
+    UART has is a property of the test *node*, not of the test. The baud
+    override can be given on its own, to re-rate a port the scenario declared.
+    """
+    port = port_arg or (scenario_config.port if scenario_config else None)
+    if port is None:
+        return None
+
+    baud = baud_arg or (scenario_config.baud if scenario_config else None) or default_baud
+    if port_arg is not None and scenario_config is not None and port_arg != scenario_config.port:
+        LOGGER.info("Overriding scenario %s port %s with CLI value: %s", label, scenario_config.port, port_arg)
+    return port, baud
 
 
 def resolve_dut_log(
@@ -85,20 +126,19 @@ def resolve_dut_log(
     port_arg: str | None,
     baud_arg: int | None,
 ) -> DutLogConfig | None:
-    """Merge the scenario's `dut_log` block with the CLI overrides.
+    """Merge the scenario's `dut_log` block with `--dut-log`/`--dut-log-baud`."""
+    merged = _merge_serial_config(scenario_config, port_arg, baud_arg, DEFAULT_DUT_BAUD, "DUT log")
+    return None if merged is None else DutLogConfig(*merged)
 
-    `--dut-log` wins over the scenario's port, matching how `--port` and
-    `--firmware` already override their YAML equivalents. `--dut-log-baud`
-    can be given on its own to re-rate a port the scenario declared.
-    """
-    port = port_arg or (scenario_config.port if scenario_config else None)
-    if port is None:
-        return None
 
-    baud = baud_arg or (scenario_config.baud if scenario_config else None) or DEFAULT_DUT_BAUD
-    if port_arg is not None and scenario_config is not None and port_arg != scenario_config.port:
-        LOGGER.info("Overriding scenario DUT log port %s with CLI value: %s", scenario_config.port, port_arg)
-    return DutLogConfig(port=port, baud=baud)
+def resolve_dut_cli(
+    scenario_config: DutCliConfig | None,
+    port_arg: str | None,
+    baud_arg: int | None,
+) -> DutCliConfig | None:
+    """Merge the scenario's `dut_cli` block with `--dut-cli`/`--dut-cli-baud`."""
+    merged = _merge_serial_config(scenario_config, port_arg, baud_arg, DEFAULT_CLI_BAUD, "DUT CLI")
+    return None if merged is None else DutCliConfig(*merged)
 
 
 def apply_cli_overrides(wrappers: list[Wrapper], port: str | None, firmware: str | None) -> None:
@@ -133,6 +173,41 @@ def attach_dut_log_session(wrappers: list[Wrapper], session: LogSession | None) 
 
     for wrapper in needing_dut_log:
         wrapper.log_session = session
+
+
+def attach_dut_cli_shell(
+    wrappers: list[Wrapper],
+    config: DutCliConfig | None,
+    session: LogSession,
+) -> DutShell | None:
+    """Give !DutCli commands the run's shared shell, or reject the scenario.
+
+    Returns the shell so the caller can close it, or None when the scenario
+    sends no shell commands. Like `attach_dut_log_session`, a scenario that
+    needs one without a port configured is rejected before the first command
+    rather than at the moment that command runs.
+
+    The shell is created but *not* opened here: a scenario that flashes the DUT
+    first has nothing answering on the shell UART until that has happened, so
+    the first !DutCli opens it (see `DutCliWrapper._require_shell`).
+    """
+    needing_shell = [wrapper for wrapper in wrappers if wrapper.requires_dut_cli]
+    if not needing_shell:
+        return None
+
+    if config is None:
+        tags = ", ".join(sorted({f"!{wrapper.tag}" for wrapper in needing_shell}))
+        raise ValueError(
+            f"This scenario has {len(needing_shell)} command(s) driving the DUT's shell "
+            f"({tags}), but no shell UART is configured. Pass --dut-cli <port> "
+            f"(e.g. /dev/ttyACM1), or add a top-level 'dut_cli' block to the scenario."
+        )
+
+    shell = DutShell(port=config.port, baud=config.baud, log_session=session)
+    for wrapper in needing_shell:
+        wrapper.dut_shell = shell
+    LOGGER.info("DUT shell configured on %s at %d baud", config.port, config.baud)
+    return shell
 
 
 def attach_mqtt_log_session(wrappers: list[Wrapper], session: LogSession) -> None:
@@ -318,13 +393,16 @@ def main() -> None:
     attach_log_handler(session)
 
     dut_logger: DutLogger | None = None
+    dut_shell: DutShell | None = None
     try:
         LOGGER.info("Using test scenario file: %s", args.test)
-        wrappers, scenario_dut_log = load_scenario(args.test)
+        wrappers, scenario_dut_log, scenario_dut_cli = load_scenario(args.test)
         apply_cli_overrides(wrappers, args.port, args.firmware)
         dut_logger = start_dut_logging(session, scenario_dut_log, args)
         attach_dut_log_session(wrappers, session if dut_logger is not None else None)
         attach_mqtt_log_session(wrappers, session)
+        dut_cli = resolve_dut_cli(scenario_dut_cli, args.dut_cli, args.dut_cli_baud)
+        dut_shell = attach_dut_cli_shell(wrappers, dut_cli, session)
         run_scenario(wrappers, Path(args.test), report_path, session)
     except Exception:
         # Logged rather than left to the default excepthook: that writes the
@@ -335,6 +413,8 @@ def main() -> None:
         LOGGER.exception("Scenario run failed")
         raise
     finally:
+        if dut_shell is not None:
+            dut_shell.close()
         if dut_logger is not None:
             dut_logger.stop()
         LOGGER.info(

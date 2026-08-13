@@ -1,6 +1,6 @@
 # Gora Testing Tool
 
-An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, control relays (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
+An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, control relays (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, drive a device's Zephyr shell over UART, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
 
 ---
 
@@ -331,6 +331,8 @@ The tool is executed using `main.py`. You specify the path to a scenario YAML fi
 *   `-r, --report` (Optional): Path to write the HTML test report to. A directory (existing, ending in `/`, or just a bare name with no `.html` suffix like `reports`) gets a default-named report file written inside it, rather than becoming the report file itself. Defaults to `results/<scenario>_<timestamp>.html`.
 *   `--dut-log` (Optional): Serial port carrying the DUT's own console (e.g. `/dev/ttyACM0`), captured for the whole run into the log files below. Overrides the scenario's `dut_log` block, since the console's device path is a property of the test *node*, not the test.
 *   `--dut-log-baud` (Optional): Baud rate for `--dut-log`. Defaults to the scenario's value, else `115200`.
+*   `--dut-cli` (Optional): Serial port carrying the DUT's *shell* (e.g. `/dev/ttyACM1`), which [`!DutCli`](#dutcli) commands send to. Overrides the scenario's `dut_cli` block, for the same reason `--dut-log` overrides `dut_log`. Must be a different port from `--dut-log`: one process reading a port is what makes framing a shell response possible at all.
+*   `--dut-cli-baud` (Optional): Baud rate for `--dut-cli`. Defaults to the scenario's value, else `115200`.
 
 ### Test Report
 
@@ -346,14 +348,15 @@ A command that fails stops the scenario at that point, same as before this exist
 
 ### Log Files
 
-Alongside the report, every run writes four logs sharing its name — so `results/gateway_20260730_143322.html` comes with:
+Alongside the report, every run writes five logs sharing its name — so `results/gateway_20260730_143322.html` comes with:
 
 | File | Contents |
 | --- | --- |
 | `gateway_20260730_143322.tool.log` | The tool's own log output, timestamped |
 | `gateway_20260730_143322.device.log` | The DUT's serial console, timestamped |
 | `gateway_20260730_143322.mqtt.log` | Every MQTT message received, plus each session's connect/subscribe/disconnect, timestamped |
-| `gateway_20260730_143322.combined.log` | All three interleaved, plus per-command `START`/`END` markers carrying PASS/FAIL |
+| `gateway_20260730_143322.cli.log` | Every `!DutCli` shell transaction: the command sent (`->`), each reply line (`<-`), and log output that arrived while it ran (`<~`) |
+| `gateway_20260730_143322.combined.log` | All four interleaved, plus per-command `START`/`END` markers carrying PASS/FAIL |
 
 The combined log is the one to read when a test fails: it shows what the DUT was saying and what the broker carried at the moment a command failed, without cross-referencing timestamps by hand. Each line is tagged with the source it came from:
 
@@ -365,12 +368,15 @@ The combined log is the one to read when a test fails: it shows what the DUT was
 [14:33:41.495] --- CMD 7/9 END: PASS (0.29s) ---
 ```
 
-Capturing the DUT console needs either `--dut-log` (above) or a top-level `dut_log` block in the scenario:
+Capturing the DUT console needs either `--dut-log` (above) or a top-level `dut_log` block in the scenario. Driving the DUT's shell with [`!DutCli`](#dutcli) needs the same for its own UART, as `--dut-cli` or a top-level `dut_cli` block — the two are configured identically, and a scenario may declare either, both, or neither:
 
 ```yaml
 dut_log:
-  port: "/dev/ttyACM0"
-  baud: 115200      # optional, defaults to 115200
+  port: "/dev/ttyACM0"   # the console the DUT prints to
+  baud: 115200           # optional, defaults to 115200
+dut_cli:
+  port: "/dev/ttyACM1"   # the shell the DUT accepts commands on
+  baud: 115200           # optional, defaults to 115200
 commands:
   - ...
 ```
@@ -379,7 +385,7 @@ Notes:
 *   The tool log starts before the scenario is parsed, so a scenario that fails to load still leaves a log explaining why — as does a run that dies part-way, since every line is flushed as it is written.
 *   A DUT that resets mid-scenario (`!ProgramJlink`, a BLE write that reboots it) makes its USB console disappear and re-enumerate. That is handled: the reader reattaches and notes both events in the combined log. Output emitted while the port was down is lost, and a bench with several CDC devices may need a stable `/dev/serial/by-id/...` path.
 *   If the console **cannot be opened when the run starts**, the scenario aborts before any command executes rather than finishing with a convincing but empty device log.
-*   With no DUT console configured, all four logs are still written; `device.log` says so explicitly, so an empty one is never ambiguous. A run with no [`!MqttSubscribe`](#mqttsubscribe) simply leaves `mqtt.log` empty.
+*   With no DUT console configured, all five logs are still written; `device.log` says so explicitly, so an empty one is never ambiguous. A run with no [`!MqttSubscribe`](#mqttsubscribe) simply leaves `mqtt.log` empty, and one with no [`!DutCli`](#dutcli) leaves `cli.log` empty.
 *   `mqtt.log` records every message the broker delivered, written as it arrives and *before* it is buffered for a check — so it stays a complete record whether or not an [`!MqttExpect`](#mqttexpect) consumed the message, and even for traffic no check ever looked at. That is what separates "the gateway never published" from "it published, but a later check was looking at the wrong topic". Payload line breaks are escaped as `\n` to keep one message per line.
 *   Every `mqtt.log` line carries the session's `client_id`, since a scenario can hold several broker sessions open at once and they all share the one file.
 
@@ -621,6 +627,37 @@ Three things to know:
 A failed match **fails the scenario**, logging how many lines were examined and the last 15 the DUT emitted, so the report shows what it *was* saying. If lines have been evicted from the in-memory buffer (over 5000 captured), the failure says so rather than implying the DUT definitely never emitted the line — `device.log` remains complete either way.
 
 Matching is against the line **as the firmware emitted it**; the `[HH:MM:SS.mmm]` prefix in the log files is added by this tool and is not part of what the regex sees. A timestamp the firmware prints itself — such as the gateway's own `[2026-08-04T06:25:01,707000Z]` — *is* matchable, which makes `validation: '^\[19[0-9]{2}-'` a way to spot a device still running on an unsynced 1970 clock.
+
+### `!DutCli`
+Sends one command to the DUT's Zephyr shell over UART and, optionally, asserts on the reply. The other side of [`!DutLogExpect`](#dutlogexpect): rather than waiting for the DUT to volunteer something on its console, this *asks* it and checks the answer — for state the device will only report when queried (`gora status`), and for driving it (provisioning, resets) without a BLE or MQTT round trip. Wraps `tools/dut_cli`, which is also runnable standalone for poking at a device by hand:
+
+```bash
+python tools/dut_cli/dut_cli.py --port /dev/ttyACM1 "gora status" -c "kernel version"
+```
+
+Needs a shell UART to be configured (`--dut-cli`, or a `dut_cli` block). A scenario using this tag without one is **rejected before the first command runs**, exactly as `!DutLogExpect` is without a console.
+
+```yaml
+  - !DutCli:
+    name: "Gateway Reports Itself Online"
+    command: "gora status"
+    validation: 'state:\s*connected'
+    timeout_s: 5
+```
+
+*   `name`: (Optional) Descriptive log name.
+*   `command`: (Required) The line typed at the shell, e.g. `"gora status"`.
+*   `validation`: (Optional) A Python regular expression, *searched* against the reply (it need not match the whole reply, and may span lines with an explicit `\n`). Omit it to run a command for its effect and just log what came back.
+*   `timeout_s`: (Optional) Seconds to wait for the shell's prompt to come back after the command. Defaults to `3`.
+
+Four things to know:
+
+*   **Use single quotes around the validation**, for the same YAML reason as `!DutLogExpect`: `"...\s..."` is a scanner error, `'...\s...'` passes the backslash through untouched.
+*   **The reply is matched, not the DUT's log output.** Zephyr's logging backend usually shares the shell UART, so `<inf>` lines can land in the middle of a response; they are separated out and never matched against (a failure quotes them separately, since they often explain the reply). The command's own echo and the trailing prompt are stripped too, so a pattern is written against what the command actually printed.
+*   **One shell serves the whole run.** It is opened by the first `!DutCli` — not at start-up, so a scenario may flash the DUT first — and closed when the run ends. If the port has gone when a command is sent (a DUT that reset since the last one), it is reopened once and the command retried.
+*   **A command the shell refuses fails the scenario** regardless of `validation` — `command not found`, `wrong parameter count` and friends mean the scenario is written against a firmware that does not have this command, which no pattern could sensibly assert against. A command that *ran* and returned news the test dislikes is an ordinary `validation` failure instead.
+
+A failed match **fails the scenario**, quoting the reply and any log output that arrived while the command ran. Unlike `!DutLogExpect` there is no waiting or retrying: the shell answers immediately, so a state that has not settled yet is a mismatch. Poll for one with the DUT console (`!DutLogExpect`) or a `!Loop`, or bound it by placing the check after a `wait_after_s`.
 
 ### `!Loop`
 Runs nested scenario commands sequentially multiple times.
