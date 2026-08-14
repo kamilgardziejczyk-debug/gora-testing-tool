@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # imported for typing only, keeping the base class dependency-free
     from tools.dut_cli import DutShell
-    from tools.dut_logger import LogSession
+    from tools.dut_logger import DutLogger, LogSession
 
 
 class Wrapper(ABC):
@@ -44,6 +44,12 @@ class Wrapper(ABC):
     declaring `requires_dut_cli`, and only when a shell UART is configured -
     one shell serves the whole scenario, so commands do not each pay for
     opening the port and re-syncing on the prompt.
+
+    `dut_logger` is the run's `DutLogger` itself, set by main.py on wrappers
+    declaring `controls_dut_log`. Distinct from `log_session`, which is where
+    captured lines end up: a wrapper that only reads the capture wants the
+    session, and only one that suspends or resumes the capture needs the reader
+    behind it.
     """
 
     wait_after_s: float | None = None
@@ -54,6 +60,7 @@ class Wrapper(ABC):
     validation_actual: str | None = None
     log_session: LogSession | None = None
     dut_shell: DutShell | None = None
+    dut_logger: DutLogger | None = None
 
     # Capability markers main.py checks instead of an isinstance chain, so a new
     # wrapper opts in here without main.py needing an edit for it. A wrapper
@@ -64,6 +71,7 @@ class Wrapper(ABC):
     requires_dut_log: bool = False
     requires_dut_cli: bool = False
     captures_mqtt_log: bool = False
+    controls_dut_log: bool = False
 
     @abstractmethod
     def parse(self) -> None:

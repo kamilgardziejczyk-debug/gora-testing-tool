@@ -72,6 +72,43 @@ opened when the run starts, the scenario aborts before any command executes,
 rather than completing with a convincing but empty device log. The reason is
 written to the logs before the process exits.
 
+## Sharing the port with a programmer
+
+Reconnect logic only helps where something actually disconnects. On a board
+whose console **is** its programming port — an ESP32 behind a USB-UART bridge,
+logging and flashing both on `/dev/ttyUSB0` — the port belongs to the bridge
+chip rather than to the firmware, so it stays openable while the ROM bootloader
+runs and while flash is being written. Nothing disconnects, and two readers on
+it simply split the byte stream between them, costing esptool parts of its
+handshake.
+
+The port is therefore handed over explicitly, with `pause()` and `resume()`
+(driven from a scenario by [`!DutLogControl`](../../README.md#dutlogcontrol)):
+
+```python
+logger.pause()                     # returns once the port is really closed
+flash_the_device()                 # esptool now has it to itself
+logger.resume()                    # reopens without resetting the DUT
+```
+
+```
+[14:34:01.575] --- DUT LOG PORT RELEASED: /dev/ttyUSB0 ---
+[14:36:44.812] --- DUT LOG PORT RECLAIMED: /dev/ttyUSB0 ---
+```
+
+*   `pause()` waits for the reader thread to close the port before returning,
+    since the caller's next act is to hand it to something that needs it
+    exclusively. It raises `TimeoutError` if the reader doesn't let go.
+*   `resume()` opens the port itself rather than leaving it to the reader
+    thread, so a console that can't be recovered raises `ConnectionError` at the
+    call instead of quietly logging nothing for the rest of the run.
+*   `resume(reset_dut=False)` is the default because DTR and RTS drive the reset
+    and boot-mode pins on these boards, so merely opening the port reboots the
+    chip — which would discard the boot the reopen was meant to capture. Pass
+    `reset_dut=True` to get pyserial's normal behaviour. The choice sticks for
+    subsequent reconnects, since the wiring doesn't change mid-run.
+*   Both are idempotent, and `stop()` works normally on a paused logger.
+
 ## Install
 
 Needs `pyserial`, already pulled in via the repo's requirements chain:
@@ -170,6 +207,10 @@ handler = attach(session)          # tool logging now also goes to the session
 
 logger = DutLogger(session, port="/dev/ttyACM0", baud=115200)
 logger.start()                     # raises ConnectionError if it can't open
+
+logger.pause()                     # hand the port to a programmer that needs it
+logger.is_paused                   # -> True
+logger.resume()                    # take it back, without resetting the DUT
 
 session.write_marker("CMD 1/2 START: Flash (!ProgramJlink)")
 session.write_device("a line as if from the DUT")

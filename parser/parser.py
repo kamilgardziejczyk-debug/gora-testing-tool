@@ -9,6 +9,7 @@ from tools.dut_logger import DEFAULT_BAUD as DEFAULT_DUT_BAUD
 from wrappers import (
     BleCentralWrapper,
     DutCliWrapper,
+    DutLogControlWrapper,
     DutLogExpectWrapper,
     ExecuteCommandWrapper,
     MqttDisconnectWrapper,
@@ -37,6 +38,7 @@ WRAPPER_BY_TAG = {
     "MqttExpect": MqttExpectWrapper,
     "MqttDisconnect": MqttDisconnectWrapper,
     "DutLogExpect": DutLogExpectWrapper,
+    "DutLogControl": DutLogControlWrapper,
     "DutCli": DutCliWrapper,
 }
 

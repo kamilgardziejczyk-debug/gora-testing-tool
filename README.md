@@ -394,6 +394,8 @@ Notes:
 *   The tool log starts before the scenario is parsed, so a scenario that fails to load still leaves a log explaining why — as does a run that dies part-way, since every line is flushed as it is written.
 *   A DUT that resets mid-scenario (`!ProgramJlink`, a BLE write that reboots it) makes its USB console disappear and re-enumerate. That is handled: the reader reattaches and notes both events in the combined log. Output emitted while the port was down is lost, and a bench with several CDC devices may need a stable `/dev/serial/by-id/...` path.
 *   If the console **cannot be opened when the run starts**, the scenario aborts before any command executes rather than finishing with a convincing but empty device log.
+*   A board whose **console is also its programming port** (an ESP32 on `/dev/ttyUSB0`) cannot be captured and flashed at the same time — that port belongs to the USB-UART bridge, so it never disappears and two readers simply split its bytes between them. Hand it over around the flash with [`!DutLogControl`](#dutlogcontrol); a scenario that forgets to is rejected at load rather than failing its flash at random.
+*   The console and the shell (`--dut-cli`) must be **different ports**, and a scenario configuring both on one is rejected at load: one process reading a port is what makes framing a shell response possible at all.
 *   With no DUT console configured, all five logs are still written; `device.log` says so explicitly, so an empty one is never ambiguous. A run with no [`!MqttSubscribe`](#mqttsubscribe) simply leaves `mqtt.log` empty, and one with no [`!DutCli`](#dutcli) leaves `cli.log` empty.
 *   `mqtt.log` records every message the broker delivered, written as it arrives and *before* it is buffered for a check — so it stays a complete record whether or not an [`!MqttExpect`](#mqttexpect) consumed the message, and even for traffic no check ever looked at. That is what separates "the gateway never published" from "it published, but a later check was looking at the wrong topic". Payload line breaks are escaped as `\n` to keep one message per line.
 *   Every `mqtt.log` line carries the session's `client_id`, since a scenario can hold several broker sessions open at once and they all share the one file.
@@ -437,6 +439,8 @@ Flashes an ESP32 microcontroller using the `esptool` library.
 *   `bootloader`: (Optional) Bootloader filename, flashed at `0x0000`. Omit it to leave the bootloader already on the chip untouched.
 *   `partition_table`: (Optional) Partition table filename, flashed at `0x8000`. Omit it to leave the table already on the chip untouched.
 *   `timeout_s`: (Optional) Fail the step if flashing doesn't finish within this many seconds. Defaults to no timeout. Note the difference from `!ProgramJlink`: esptool runs in-process rather than as a subprocess, so the timeout fails the command (stopping the scenario) but cannot interrupt a write already in progress.
+
+If the DUT's console is being captured on the same port this flashes (the usual ESP32 case, where both are `/dev/ttyUSB0`), bracket this command with [`!DutLogControl`](#dutlogcontrol) so the two do not read the port at once. A scenario that does not is rejected before the first command runs.
 
 Giving only `firmware` (plus `port`/`firmware_dir`) flashes the app alone — the quick edit-flash-test loop, matching `!ProgramJlink`'s single-binary form. Adding `bootloader` and `partition_table` performs the full three-image flash, in ascending address order:
 
@@ -655,6 +659,45 @@ Three things to know:
 A failed match **fails the scenario**, logging how many lines were examined and the last 15 the DUT emitted, so the report shows what it *was* saying. If lines have been evicted from the in-memory buffer (over 5000 captured), the failure says so rather than implying the DUT definitely never emitted the line — `device.log` remains complete either way.
 
 Matching is against the line **as the firmware emitted it**; the `[HH:MM:SS.mmm]` prefix in the log files is added by this tool and is not part of what the regex sees. A timestamp the firmware prints itself — such as the gateway's own `[2026-08-04T06:25:01,707000Z]` — *is* matchable, which makes `validation: '^\[19[0-9]{2}-'` a way to spot a device still running on an unsynced 1970 clock.
+
+### `!DutLogControl`
+Stops and starts the run's DUT console capture, for the board whose console **is** its programming port. An ESP32 behind a USB-UART bridge logs on `/dev/ttyUSB0` and is flashed on `/dev/ttyUSB0`, and both cannot read it at once: the kernel gives each byte to whichever reader asks first, so a capture left running through a flash quietly eats parts of esptool's handshake and the flash fails in ways that look random. Bracket the flash to hand the port over explicitly:
+
+```yaml
+  - !DutLogControl
+    name: "Release The Console For Flashing"
+    state: 0
+
+  - !ProgramEsptool:
+    name: "Flash The Tracker"
+    port: "/dev/ttyUSB0"
+    firmware: "tekpadz.bin"
+    timeout_s: 180
+
+  - !DutLogControl
+    name: "Capture The Console Again"
+    state: 1
+    wait_after_s: 120
+```
+
+*   `name`: (Optional) Descriptive log name.
+*   `state`: (Required) `1` captures, `0` stops capturing — spelled like [`!RelayControl`](#relaycontrol)'s `state`.
+*   `reset_dut`: (Optional) Whether taking the console back may reset the device. Defaults to `0`.
+
+Needs a DUT console to be captured (`--dut-log`, or a `dut_log` block), and a scenario using this tag without one is **rejected before the first command runs**, exactly as [`!DutLogExpect`](#dutlogexpect) is.
+
+Four things to know:
+
+*   **A forgotten bracket is caught before the bench is touched.** A scenario that opens the console's port while capture is still holding it is rejected at load, naming the command and what to add — as is a [`!DutLogExpect`](#dutlogexpect) scheduled at a point where capture is stopped, which could only ever find nothing. This is a static walk over the commands in order, so it costs nothing at runtime and does not depend on the flash actually failing to reveal the mistake.
+*   **`state: 0` returns only once the port is genuinely closed**, not once the reader has been asked to close it — otherwise the overlap it exists to prevent would survive it. `state: 1` likewise opens the port itself, so a console that cannot be recovered fails that command rather than silently logging nothing for the rest of the run.
+*   **`reset_dut` defaults to `0` because DTR and RTS are wired to reset.** On these boards, opening the port reboots the chip through the usual auto-reset transistor pair. A `state: 1` after flashing is normally there to capture the boot esptool has just started, and resetting would throw away exactly that. The choice sticks for later reconnects too, since the wiring doesn't change mid-run.
+*   **Put the post-flash wait on the resume, not on the flash.** `wait_after_s` sleeps *after* a command, so leaving it on `!ProgramEsptool` sleeps through the boot with nothing listening. Moving it to the `state: 1` command means the same wait happens with capture running, and the whole boot lands in `device.log`.
+
+Output the DUT emitted **while capture was stopped is gone**, not replayed — the input buffer is cleared as the port reopens, which on a shared port is what keeps the programmer's own traffic from being decoded as console lines. Keep the `state: 1` immediately after the flash so the window is as small as possible; that is also what puts the boot itself inside the capture.
+
+Both states are idempotent: stopping twice, or resuming something already running, is not an error. The tag states what the capture's state should be, not a transition it must be correctly positioned to perform. Each handover is marked in the combined log (`DUT LOG PORT RELEASED` / `DUT LOG PORT RECLAIMED`), so the gap in the device log is explained rather than looking like a silent DUT.
+
+A board with a *separate* console — the RW612 in `scenarios/gateway.yml`, which logs on `/dev/ttyACM0` while being flashed over SWD — never needs this tag.
 
 ### `!DutCli`
 Sends one command to the DUT's Zephyr shell over UART and, optionally, asserts on the reply. The other side of [`!DutLogExpect`](#dutlogexpect): rather than waiting for the DUT to volunteer something on its console, this *asks* it and checks the answer — for state the device will only report when queried (`gora status`), and for driving it (provisioning, resets) without a BLE or MQTT round trip. Wraps `tools/dut_cli`, which is also runnable standalone for poking at a device by hand:

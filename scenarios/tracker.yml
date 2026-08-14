@@ -1,5 +1,5 @@
 ---
-# Flashes an ESP32 tracker from scratch.
+# Flashes an ESP32 tracker from scratch and captures its console.
 #
 # Neither `port` nor `firmware_dir` is set here, matching gateway.yml and the
 # CI job: both name properties of the test *node*, not of the test, so they are
@@ -18,9 +18,20 @@
 # step (stopping the scenario) rather than interrupting a write already under
 # way - see README.md.
 #
-# wait_after_s covers the reboot after the hard reset esptool issues once the
-# flash completes, so the next command does not talk to a device still coming
-# up.
+# The console and the programming port are the same wire on this board, so the
+# flash is bracketed by !DutLogControl: capture is stopped before esptool takes
+# the port and started again once it has finished. Without that, both would
+# read /dev/ttyUSB0 at once and esptool would lose parts of its handshake to
+# the logger. Unlike gateway.yml, whose RW612 logs on /dev/ttyACM0 while being
+# flashed over SWD, nothing here can capture and flash at the same time.
+#
+# The wait for the reboot after esptool's hard reset sits on the *resume*, not
+# on the flash: capture is running by then, so the tracker's whole boot lands
+# in the device log instead of being slept through with nothing listening.
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
 
 commands:
 
@@ -30,10 +41,25 @@ commands:
     state: 1
     wait_after_ms: 100
 
+  - !DutLogControl
+    name: "Release The Console For Flashing"
+    state: 0
+
   - !ProgramEsptool:
     name: "Flash The Tracker"
     bootloader: "bootloader.bin"
     partition_table: "partition-table.bin"
-    firmware: "tracker.bin"
+    firmware: "tekpadz.bin"
+    port: "/dev/ttyUSB0"
     timeout_s: 180
-    wait_after_s: 35
+
+  - !DutLogControl
+    name: "Capture The Console Again"
+    state: 1
+    wait_after_s: 120
+
+  - !RelayControl
+    name: "Turn off the device"
+    relay: 1
+    state: 0
+    wait_after_ms: 100

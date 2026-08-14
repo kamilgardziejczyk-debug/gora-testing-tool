@@ -152,7 +152,7 @@ def apply_cli_overrides(wrappers: list[Wrapper], port: str | None, firmware: str
 
 
 def attach_dut_log_session(wrappers: list[Wrapper], session: LogSession | None) -> None:
-    """Give commands that assert on DUT output access to the run's capture.
+    """Give commands that need the DUT's capture access to it.
 
     `session` is None when no DUT console is being captured. A scenario that
     asks for such a check anyway is rejected here rather than at the moment the
@@ -166,13 +166,28 @@ def attach_dut_log_session(wrappers: list[Wrapper], session: LogSession | None) 
     if session is None:
         tags = ", ".join(sorted({f"!{wrapper.tag}" for wrapper in needing_dut_log}))
         raise ValueError(
-            f"This scenario has {len(needing_dut_log)} command(s) asserting on DUT console "
-            f"output ({tags}), but no console is being captured. Pass --dut-log <port> "
+            f"This scenario has {len(needing_dut_log)} command(s) needing the DUT console "
+            f"({tags}), but no console is being captured. Pass --dut-log <port> "
             f"(e.g. /dev/ttyACM0), or add a top-level 'dut_log' block to the scenario."
         )
 
     for wrapper in needing_dut_log:
         wrapper.log_session = session
+
+
+def attach_dut_logger(wrappers: list[Wrapper], dut_logger: DutLogger | None) -> None:
+    """Give commands that suspend or resume capture the reader itself.
+
+    Separate from `attach_dut_log_session`: reading what was captured needs the
+    session, while handing the port to a programmer needs the reader holding it.
+    A missing console is already rejected there, since every wrapper wanting the
+    reader also declares `requires_dut_log`.
+    """
+    if dut_logger is None:
+        return
+    for wrapper in wrappers:
+        if wrapper.controls_dut_log:
+            wrapper.dut_logger = dut_logger
 
 
 def attach_dut_cli_shell(
@@ -208,6 +223,71 @@ def attach_dut_cli_shell(
         wrapper.dut_shell = shell
     LOGGER.info("DUT shell configured on %s at %d baud", config.port, config.baud)
     return shell
+
+
+def validate_dut_log_handover(
+    wrappers: list[Wrapper],
+    dut_log: DutLogConfig | None,
+    dut_cli: DutCliConfig | None,
+) -> None:
+    """Reject a scenario whose console capture would fight over its own port.
+
+    A board whose console *is* its programming port has one wire and two
+    claimants, and nothing stops them physically: the port stays openable
+    throughout a flash, so both simply read it and split the bytes between them.
+    That shows up as an esptool handshake failing for no visible reason, which
+    is why it is caught here - statically, before the first relay clicks -
+    rather than left to fail differently on every run.
+
+    Reads as a walk over the commands in order, tracking whether capture is
+    running at each one, since that is exactly how the scenario's author reads
+    it too.
+    """
+    if dut_log is None:
+        return
+
+    if dut_cli is not None and dut_cli.port == dut_log.port:
+        raise ValueError(
+            f"The DUT console and the DUT shell are both configured on {dut_log.port}. "
+            f"One process reading a port is what makes framing a shell response possible "
+            f"at all, so these must be different ports."
+        )
+
+    capturing = True
+    for index, wrapper in enumerate(wrappers, start=1):
+        if wrapper.controls_dut_log:
+            capturing = bool(getattr(wrapper, "state", False))
+            continue
+        if capturing:
+            _reject_port_conflict(wrapper, index, dut_log)
+        elif wrapper.requires_dut_log:
+            raise ValueError(
+                f"Command {index} ({_describe(wrapper)}) needs the DUT console, but capture "
+                f"is stopped at that point in the scenario. Resume it with a !DutLogControl "
+                f"'state: 1' command first."
+            )
+
+
+def _reject_port_conflict(wrapper: Wrapper, index: int, dut_log: DutLogConfig) -> None:
+    """Raise if `wrapper` claims the port the console capture is holding."""
+    # getattr because only some tags have a serial port at all, and !MqttSubscribe
+    # has a `port` that is a TCP port number rather than a device path.
+    port = getattr(wrapper, "port", None)
+    if not isinstance(port, str) or port != dut_log.port:
+        return
+    raise ValueError(
+        f"Command {index} ({_describe(wrapper)}) opens {port}, which the DUT console "
+        f"capture is holding at that point in the scenario. Two readers on one port split "
+        f"the bytes between them, so this would corrupt both. Bracket the command with "
+        f"!DutLogControl 'state: 0' before it and 'state: 1' after it."
+    )
+
+
+def _describe(wrapper: Wrapper) -> str:
+    """A command's name and tag, for an error a scenario author can act on."""
+    tag = f"!{wrapper.tag}" if wrapper.tag else type(wrapper).__name__
+    name = getattr(wrapper, "name", None)
+    return f'{tag} "{name}"' if name else tag
 
 
 def attach_mqtt_log_session(wrappers: list[Wrapper], session: LogSession) -> None:
@@ -282,6 +362,7 @@ def run_scenario(
     scenario_path: Path,
     report_path: Path,
     session: LogSession | None = None,
+    dut_logger: DutLogger | None = None,
 ) -> None:
     started_at = datetime.now()
     wall_start = time.monotonic()
@@ -313,6 +394,7 @@ def run_scenario(
         # the run leaves no record.
         mqtt_registry.close_all()
         relay_cleanup_all()
+        _resume_dut_logging(dut_logger)
 
         total_duration_s = time.monotonic() - wall_start
         generate_report(scenario_path, started_at, total_duration_s, results, report_path, session)
@@ -326,6 +408,26 @@ def run_scenario(
 
     if failure is not None:
         raise failure
+
+
+def _resume_dut_logging(dut_logger: DutLogger | None) -> None:
+    """Take the DUT console back if the scenario stopped while it was released.
+
+    A scenario that fails between a `state: 0` and its matching `state: 1`
+    would otherwise capture nothing for the rest of the run - including whatever
+    the DUT says about the failure, which is the most useful part of the log at
+    exactly that moment.
+
+    Best effort by design: this runs in the runner's `finally`, so a console
+    that cannot be recovered must be logged and not raised, or it would replace
+    the failure that actually stopped the scenario.
+    """
+    if dut_logger is None or not dut_logger.is_paused:
+        return
+    try:
+        dut_logger.resume()
+    except (ConnectionError, OSError) as error:
+        LOGGER.warning("Could not resume DUT console capture after the scenario ended: %s", error)
 
 
 def _mark_command_start(session: LogSession | None, wrapper: Wrapper, index: int, total: int) -> None:
@@ -347,11 +449,7 @@ def _mark_command_end(session: LogSession | None, result: TestResult, index: int
     session.write_marker(marker)
 
 
-def start_dut_logging(
-    session: LogSession,
-    scenario_dut_log: DutLogConfig | None,
-    args: argparse.Namespace,
-) -> DutLogger | None:
+def start_dut_logging(session: LogSession, dut_log: DutLogConfig | None) -> DutLogger | None:
     """Begin DUT console capture, or explain in the log why there is none.
 
     Returns the running logger so the caller can stop it, or None when no
@@ -359,7 +457,6 @@ def start_dut_logging(
     raises: a run whose DUT was never attached would otherwise finish with a
     convincing but empty device log.
     """
-    dut_log = resolve_dut_log(scenario_dut_log, args.dut_log, args.dut_log_baud)
     if dut_log is None:
         # Said out loud in the device log itself, so an empty one can't be
         # misread as "the DUT stayed quiet" when it actually means "no DUT
@@ -398,12 +495,19 @@ def main() -> None:
         LOGGER.info("Using test scenario file: %s", args.test)
         wrappers, scenario_dut_log, scenario_dut_cli = load_scenario(args.test)
         apply_cli_overrides(wrappers, args.port, args.firmware)
-        dut_logger = start_dut_logging(session, scenario_dut_log, args)
-        attach_dut_log_session(wrappers, session if dut_logger is not None else None)
-        attach_mqtt_log_session(wrappers, session)
+
+        # Both ports are resolved before anything is opened, so the checks that
+        # need to compare them run while the bench is still untouched.
+        dut_log = resolve_dut_log(scenario_dut_log, args.dut_log, args.dut_log_baud)
         dut_cli = resolve_dut_cli(scenario_dut_cli, args.dut_cli, args.dut_cli_baud)
+        validate_dut_log_handover(wrappers, dut_log, dut_cli)
+
+        dut_logger = start_dut_logging(session, dut_log)
+        attach_dut_log_session(wrappers, session if dut_logger is not None else None)
+        attach_dut_logger(wrappers, dut_logger)
+        attach_mqtt_log_session(wrappers, session)
         dut_shell = attach_dut_cli_shell(wrappers, dut_cli, session)
-        run_scenario(wrappers, Path(args.test), report_path, session)
+        run_scenario(wrappers, Path(args.test), report_path, session, dut_logger)
     except Exception:
         # Logged rather than left to the default excepthook: that writes the
         # traceback straight to stderr, bypassing logging entirely, which would

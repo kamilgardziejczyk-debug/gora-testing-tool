@@ -8,6 +8,7 @@ from .usb_switch_wrapper import UsbSwitchWrapper
 from .subghz_sim_wrapper import SubghzSimWrapper
 from .ble_central_wrapper import BleCentralWrapper
 from .dut_log_expect_wrapper import DutLogExpectWrapper
+from .dut_log_control_wrapper import DutLogControlWrapper
 from .dut_cli_wrapper import DutCliWrapper
 from .mqtt_subscribe_wrapper import MqttSubscribeWrapper
 from .mqtt_expect_wrapper import MqttExpectWrapper
