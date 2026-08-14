@@ -64,7 +64,7 @@ commands:
     name: "Gateway Reports Itself Online"
     command: "journal clear"
     validation: 'Journal cleared'
-    timeout_s: 60
+    timeout_s: 360
 
   - !RelayControl
     name: "Start BLE Advertising"

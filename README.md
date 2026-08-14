@@ -432,9 +432,28 @@ Flashes an ESP32 microcontroller using the `esptool` library.
 *   `port`: (Required if not overridden via `-p` / `--port`) Destination serial port.
 *   `baudrate`: (Optional) Upload baudrate. Defaults to `460800`.
 *   `firmware_dir`: (Required if not overridden via `-f` / `--firmware`) Directory containing the firmware binaries. A relative path resolves against the scenario file's directory, so a scenario and its firmware can be moved together as one portable tree. A CLI `-f`/`--firmware` value overrides this entirely and is used as-is (relative to the shell's working directory, like any other CLI argument).
-*   `bootloader`: (Required) Bootloader filename.
-*   `partition_table`: (Required) Partition table filename.
 *   `firmware`: (Required) App firmware filename.
+*   `address`: (Optional) Load address for `firmware` (e.g. `0x20000`). Defaults to `0x10000`, the standard ESP-IDF app partition offset.
+*   `bootloader`: (Optional) Bootloader filename, flashed at `0x0000`. Omit it to leave the bootloader already on the chip untouched.
+*   `partition_table`: (Optional) Partition table filename, flashed at `0x8000`. Omit it to leave the table already on the chip untouched.
+*   `timeout_s`: (Optional) Fail the step if flashing doesn't finish within this many seconds. Defaults to no timeout. Note the difference from `!ProgramJlink`: esptool runs in-process rather than as a subprocess, so the timeout fails the command (stopping the scenario) but cannot interrupt a write already in progress.
+
+Giving only `firmware` (plus `port`/`firmware_dir`) flashes the app alone — the quick edit-flash-test loop, matching `!ProgramJlink`'s single-binary form. Adding `bootloader` and `partition_table` performs the full three-image flash, in ascending address order:
+
+```yaml
+  - !ProgramEsptool:
+    name: "Flash The Tracker App"
+    port: "/dev/ttyUSB0"
+    firmware: "tracker.bin"
+    timeout_s: 120
+
+  - !ProgramEsptool:
+    name: "Full Flash From Scratch"
+    port: "/dev/ttyUSB0"
+    bootloader: "bootloader.bin"
+    partition_table: "partition-table.bin"
+    firmware: "tracker.bin"
+```
 
 ### `!RelayControl`
 Energizes or de-energizes one channel of an 8-channel relay board over the Raspberry Pi GPIO header (requires `RPi.GPIO`). Wraps `tools/relay_board` — see [its README](tools/relay_board/README.md) for wiring, power supply notes, active-low/active-high polarity, and the standalone CLI/REPL.
