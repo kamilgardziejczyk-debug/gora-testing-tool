@@ -148,6 +148,37 @@ docker run --rm \
     probes; the image stubs that out since there's no udev daemon in a
     container and devices instead reach it via the bind-mount above, so
     nothing depends on that step actually running.
+
+#### Running `!UsbSwitch` scenarios in Docker
+
+The image bundles `uhubctl`, which is what switches power on an individual
+MEGA4 hub port. It talks to the hub over raw USB, so it needs exactly the same
+passthrough as the J-Link probe above:
+
+```bash
+docker run --rm \
+  --privileged \
+  -v /dev/bus/usb:/dev/bus/usb \
+  -e TZ=Europe/Dublin \
+  -v "$PWD/results:/app/results" \
+  gora-testing-tool \
+  -t scenarios/power_cycle.yml
+```
+
+*   Without the passthrough, `tools/usb_hub` cannot reach the hub and the
+    scenario **fails** with a message naming the missing access — deliberately
+    unlike `!RelayControl`, which silently simulates. The one case that does
+    simulate is `uhubctl` being absent from the image entirely, which only
+    happens on an image built before it was added; the log line to look for is
+    `not installed on this platform. Simulating`.
+*   On the **host**, disable USB autosuspend or ports come back in
+    unpredictable states: add `usbcore.autosuspend=-1` to `/boot/cmdline.txt`
+    and reboot. This is a one-off per node and cannot be done from inside the
+    container.
+*   Running the standalone CLI on the host as a non-root user needs a udev rule
+    for the hub's vendor ID — see the [tool README](tools/usb_hub/README.md).
+    Inside the container it is not needed, since `--privileged` already implies
+    root access to the bus.
 *   `firmware:` values in the YAML (e.g. `zephyr.hex`) resolve the same as
     outside Docker, against whatever `firmware_dir`/`--firmware` gives —
     typically the mounted `/app/firmware`.
@@ -263,7 +294,8 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
     see the note in the `!BleCentral` Docker section above.
 *   `EXTRA_DOCKER_RUN_ARGS` (optional): flags appended to every node's
     `docker run` for anything that *does* vary per node, e.g.
-    `EXTRA_DOCKER_RUN_ARGS='--device /dev/ttyUSB0'` for serial scenarios —
+    `EXTRA_DOCKER_RUN_ARGS='--device /dev/ttyUSB0'` for serial scenarios, or
+    `'--privileged -v /dev/bus/usb:/dev/bus/usb'` on a node with a MEGA4 hub —
     it applies the same to every target in one invocation, so group nodes
     with matching extra hardware into separate script runs if they differ.
 *   At the end, it prints each node's container IP (from `docker inspect`
@@ -468,10 +500,36 @@ Energizes or de-energizes one channel of an 8-channel relay board over the Raspb
 *   `wait_after_s`: (Optional) Time in seconds to sleep after executing the change.
 
 ### `!UsbSwitch`
-**No-op stub** — `execute()` only logs a warning; no USB switch hardware is actually controlled yet. Implement `UsbSwitchWrapper.execute()` before relying on this in a real scenario.
+Switches power on one port of a UUGear MEGA4 USB hub, cutting VBUS to whatever is plugged into it — a hard power cycle of the device, not a soft reset. Wraps `tools/usb_hub` — see [its README](tools/usb_hub/README.md) for the `uhubctl`/udev setup, the Docker passthrough, and the standalone CLI/REPL.
 *   `name`: (Optional) Descriptive log name.
-*   `state`: (Required) `true` (enabled) or `false` (disabled).
-*   `wait_after_s`: (Optional) Time in seconds to wait.
+*   `port`: (Required) Port number `1`-`4`, or a name defined in the scenario's `usb_hub.ports` block.
+*   `state`: (Required unless `cycle_s` is given) `1`/`true` (powered) or `0`/`false` (unpowered). Leaves the port in that state after the command returns.
+*   `cycle_s`: (Required unless `state` is given) Cuts power, waits this many seconds, then restores it — one command, for power-cycling a DUT. Mutually exclusive with `state`.
+*   `wait_after_s`: (Optional) Time in seconds to sleep after executing the change.
+
+Two behaviours worth knowing before you time a scenario around this tag:
+
+*   **Powering a port off takes seconds, powering on is instant.** The kernel re-powers a port the moment a device disappears from it, so the request has to be retried until it gives up. Budget for it, or a following `!DutLogExpect` will start its timeout while the DUT is still on its way down.
+*   **Ports switched off are powered back on when the scenario ends**, including when it ends by failing — mirroring how relays are released. A run that dies between a `state: 0` and its matching `state: 1` would otherwise leave the DUT dark, and the *next* run would fail for a reason that has nothing to do with what it was testing. A scenario that deliberately ends with a port off does not get to keep it off.
+
+Ports can be given names in a top-level `usb_hub` block, so a scenario says what it is switching rather than where it happens to be plugged in:
+
+```yaml
+usb_hub:
+  location: "1-1.2"     # optional: which MEGA4, for a bench with more than one
+  ports:
+    dut_power: 3
+    debugger: 1
+
+commands:
+  - !UsbSwitch
+    name: "Power-cycle the DUT"
+    port: dut_power
+    cycle_s: 2.0
+    wait_after_s: 5
+```
+
+Both the block and each of its fields are optional: with no block at all, the only attached MEGA4 is discovered automatically and ports are addressed by number. Names are resolved *before the first command runs*, so a typo fails the scenario immediately rather than half way through a run that has already flashed the DUT.
 
 ### `!ExecuteCommand` (or `!ExecuteCommand:`)
 Runs a host terminal command using shell execution.

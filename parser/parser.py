@@ -82,6 +82,19 @@ class DutCliConfig(NamedTuple):
     baud: int
 
 
+class UsbHubConfig(NamedTuple):
+    """A scenario's top-level `usb_hub:` settings.
+
+    `location` pins which MEGA4 to drive, for a bench with more than one; left
+    None, the hub is discovered. `ports` maps scenario-level names onto port
+    numbers, so a `!UsbSwitch` command can say what it is switching ("dut_power")
+    rather than where it happens to be plugged in this month.
+    """
+
+    location: str | None
+    ports: dict[str, int]
+
+
 def _parse_serial_block(
     document: yaml.Node,
     block_name: str,
@@ -124,6 +137,48 @@ def _parse_dut_cli(document: yaml.Node) -> DutCliConfig | None:
     """Extract the optional top-level `dut_cli` mapping, or None if absent."""
     parsed = _parse_serial_block(document, "dut_cli", DEFAULT_CLI_BAUD)
     return None if parsed is None else DutCliConfig(*parsed)
+
+
+def _parse_usb_hub(document: yaml.Node) -> UsbHubConfig | None:
+    """Extract the optional top-level `usb_hub` mapping, or None if absent.
+
+    Every field is optional - a block naming only `ports` still gets its hub
+    discovered - so an empty block is accepted rather than treated as an error.
+    """
+    if not isinstance(document, yaml.MappingNode):
+        return None
+
+    block_node = _mapping_get(document, "usb_hub")
+    if not isinstance(block_node, yaml.MappingNode):
+        return None
+
+    location: str | None = None
+    ports: dict[str, int] = {}
+    for key_node, value_node in block_node.value:
+        if not isinstance(key_node, yaml.ScalarNode):
+            continue
+        if key_node.value == "location" and isinstance(value_node, yaml.ScalarNode):
+            location = value_node.value
+        elif key_node.value == "ports" and isinstance(value_node, yaml.MappingNode):
+            ports = _parse_port_names(value_node)
+
+    return UsbHubConfig(location, ports)
+
+
+def _parse_port_names(ports_node: yaml.MappingNode) -> dict[str, int]:
+    """Parse a `usb_hub.ports` mapping of name -> port number."""
+    ports: dict[str, int] = {}
+    for key_node, value_node in ports_node.value:
+        if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
+            continue
+        try:
+            ports[key_node.value] = int(value_node.value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"usb_hub.ports: '{key_node.value}' must be a port number, "
+                f"got '{value_node.value}'"
+            ) from None
+    return ports
 
 
 def _parse_iterations(loop_body: yaml.MappingNode) -> int:
@@ -216,6 +271,16 @@ class Parser:
         """
         _, document = self._load()
         return _parse_dut_cli(document)
+
+    def parse_usb_hub(self) -> UsbHubConfig | None:
+        """The scenario's `usb_hub:` settings, or None if it declares none.
+
+        Separate from `parse()` for the same reason as `parse_dut_log()`: which
+        hub the bench has, and what its ports are called, is a property of the
+        run rather than of any one command.
+        """
+        _, document = self._load()
+        return _parse_usb_hub(document)
 
     def parse(self) -> list[Wrapper]:
         document_text, document = self._load()

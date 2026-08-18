@@ -65,6 +65,12 @@ ARG RUNNER_ARCH=arm64
 # provides `bluetoothctl`, used by entrypoint.sh as a best-effort adapter
 # power-on - it only ever talks to the host's bluetoothd over the bind-
 # mounted D-Bus socket (see README), it doesn't run its own bluetoothd here.
+# uhubctl (with its libusb runtime) is what !UsbSwitch drives to cut power on
+# an individual MEGA4 hub port; it talks to the hub over raw USB, so it needs
+# the same `--privileged -v /dev/bus/usb:/dev/bus/usb` passthrough the J-Link
+# tooling below does. Without it tools/usb_hub falls back to *simulating* every
+# port change - loudly, but a scenario would still pass - so it is installed
+# here rather than left to the node.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tzdata \
         curl \
@@ -72,6 +78,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         sudo \
         bluez \
+        uhubctl \
+        libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/venv \

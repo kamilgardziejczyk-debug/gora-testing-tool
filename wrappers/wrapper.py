@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # imported for typing only, keeping the base class dependency-free
     from tools.dut_cli import DutShell
     from tools.dut_logger import DutLogger, LogSession
+    from tools.usb_hub import Switchboard
 
 
 class Wrapper(ABC):
@@ -50,6 +51,11 @@ class Wrapper(ABC):
     captured lines end up: a wrapper that only reads the capture wants the
     session, and only one that suspends or resumes the capture needs the reader
     behind it.
+
+    `usb_switchboard` is the run's `Switchboard` - the USB hub plus the port
+    names the scenario gave it - set by main.py on wrappers declaring
+    `requires_usb_hub`. One switchboard serves the whole scenario so hub
+    discovery is paid for once rather than per command.
     """
 
     wait_after_s: float | None = None
@@ -61,6 +67,7 @@ class Wrapper(ABC):
     log_session: LogSession | None = None
     dut_shell: DutShell | None = None
     dut_logger: DutLogger | None = None
+    usb_switchboard: Switchboard | None = None
 
     # Capability markers main.py checks instead of an isinstance chain, so a new
     # wrapper opts in here without main.py needing an edit for it. A wrapper
@@ -72,6 +79,7 @@ class Wrapper(ABC):
     requires_dut_cli: bool = False
     captures_mqtt_log: bool = False
     controls_dut_log: bool = False
+    requires_usb_hub: bool = False
 
     @abstractmethod
     def parse(self) -> None:

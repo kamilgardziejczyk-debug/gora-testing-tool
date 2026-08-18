@@ -5,13 +5,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from parser import DutCliConfig, DutLogConfig, Parser
+from parser import DutCliConfig, DutLogConfig, Parser, UsbHubConfig
 from reporting import TestResult, generate_report
 from tools.dut_cli import DEFAULT_BAUD as DEFAULT_CLI_BAUD
 from tools.dut_cli import DutShell
 from tools.dut_logger import DEFAULT_BAUD as DEFAULT_DUT_BAUD
 from tools.dut_logger import DutLogger, LogSession, attach as attach_log_handler
-from wrappers import Wrapper, mqtt_registry, relay_cleanup_all
+from tools.usb_hub import Switchboard, UsbHub
+from wrappers import Wrapper, mqtt_registry, relay_cleanup_all, usb_switch_restore_all
 
 
 LOGGER = logging.getLogger(__name__)
@@ -80,10 +81,12 @@ def parse_args() -> argparse.Namespace:
     return argument_parser.parse_args()
 
 
-def load_scenario(test_file: str) -> tuple[list[Wrapper], DutLogConfig | None, DutCliConfig | None]:
-    """Validate and parse a scenario into its commands and serial port settings.
+def load_scenario(
+    test_file: str,
+) -> tuple[list[Wrapper], DutLogConfig | None, DutCliConfig | None, UsbHubConfig | None]:
+    """Validate and parse a scenario into its commands and its bench settings.
 
-    All three come from one Parser so the file is read (and composed) only once.
+    All four come from one Parser so the file is read (and composed) only once.
     """
     parser = Parser(test_file)
     if not parser.validate():
@@ -92,9 +95,10 @@ def load_scenario(test_file: str) -> tuple[list[Wrapper], DutLogConfig | None, D
     LOGGER.info("YAML validation successful")
     dut_log_config = parser.parse_dut_log()
     dut_cli_config = parser.parse_dut_cli()
+    usb_hub_config = parser.parse_usb_hub()
     wrappers = parser.parse()
     LOGGER.info("Scenario parsing finished, executing %d commands", len(wrappers))
-    return wrappers, dut_log_config, dut_cli_config
+    return wrappers, dut_log_config, dut_cli_config, usb_hub_config
 
 
 def _merge_serial_config(
@@ -223,6 +227,51 @@ def attach_dut_cli_shell(
         wrapper.dut_shell = shell
     LOGGER.info("DUT shell configured on %s at %d baud", config.port, config.baud)
     return shell
+
+
+def attach_usb_switchboard(
+    wrappers: list[Wrapper],
+    config: UsbHubConfig | None,
+) -> Switchboard | None:
+    """Give !UsbSwitch commands the run's hub, or reject the scenario.
+
+    Returns the switchboard so the runner can restore power through it, or None
+    when the scenario switches no USB ports. Unlike `attach_dut_cli_shell`, a
+    scenario with no `usb_hub` block is still runnable - the hub is discovered
+    and ports addressed by number - so the block's absence is only an error for
+    a command that actually uses a name.
+
+    Every port name is resolved here rather than at execute time, so a typo in
+    one is reported before the bench is touched instead of half way through a
+    run that has already flashed the DUT.
+    """
+    needing_hub = [wrapper for wrapper in wrappers if wrapper.requires_usb_hub]
+    if not needing_hub:
+        return None
+
+    location = config.location if config else None
+    switchboard = Switchboard(UsbHub(location=location), config.ports if config else None)
+    for wrapper in needing_hub:
+        wrapper.usb_switchboard = switchboard
+        _validate_usb_port(wrapper, switchboard)
+
+    LOGGER.info(
+        "USB hub configured (%s), port names: %s",
+        location or "discovered on first use",
+        ", ".join(f"{name}={port}" for name, port in sorted(switchboard.ports.items())) or "none",
+    )
+    return switchboard
+
+
+def _validate_usb_port(wrapper: Wrapper, switchboard: Switchboard) -> None:
+    """Reject a !UsbSwitch naming a port that no number or alias resolves to."""
+    target = getattr(wrapper, "usb_port", None)
+    if target is None:
+        return
+    try:
+        switchboard.resolve(target)
+    except ValueError as error:
+        raise ValueError(f"{_describe(wrapper)}: {error}") from None
 
 
 def validate_dut_log_handover(
@@ -363,6 +412,7 @@ def run_scenario(
     report_path: Path,
     session: LogSession | None = None,
     dut_logger: DutLogger | None = None,
+    switchboard: Switchboard | None = None,
 ) -> None:
     started_at = datetime.now()
     wall_start = time.monotonic()
@@ -389,11 +439,12 @@ def run_scenario(
     finally:
         # A command that raises part-way through - including a KeyboardInterrupt
         # during execute() or the wait_after_s sleep - must still leave the
-        # broker connections closed, relays released, and a report written,
-        # or the client id stays taken by an orphan, relays stay energized, and
-        # the run leaves no record.
+        # broker connections closed, relays released, USB ports powered, and a
+        # report written, or the client id stays taken by an orphan, relays stay
+        # energized, the next run finds a dark DUT, and this run leaves no record.
         mqtt_registry.close_all()
         relay_cleanup_all()
+        usb_switch_restore_all(switchboard)
         _resume_dut_logging(dut_logger)
 
         total_duration_s = time.monotonic() - wall_start
@@ -493,7 +544,7 @@ def main() -> None:
     dut_shell: DutShell | None = None
     try:
         LOGGER.info("Using test scenario file: %s", args.test)
-        wrappers, scenario_dut_log, scenario_dut_cli = load_scenario(args.test)
+        wrappers, scenario_dut_log, scenario_dut_cli, scenario_usb_hub = load_scenario(args.test)
         apply_cli_overrides(wrappers, args.port, args.firmware)
 
         # Both ports are resolved before anything is opened, so the checks that
@@ -507,7 +558,8 @@ def main() -> None:
         attach_dut_logger(wrappers, dut_logger)
         attach_mqtt_log_session(wrappers, session)
         dut_shell = attach_dut_cli_shell(wrappers, dut_cli, session)
-        run_scenario(wrappers, Path(args.test), report_path, session, dut_logger)
+        switchboard = attach_usb_switchboard(wrappers, scenario_usb_hub)
+        run_scenario(wrappers, Path(args.test), report_path, session, dut_logger, switchboard)
     except Exception:
         # Logged rather than left to the default excepthook: that writes the
         # traceback straight to stderr, bypassing logging entirely, which would

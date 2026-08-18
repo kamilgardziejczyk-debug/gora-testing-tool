@@ -308,3 +308,4 @@ done
 warn "scenarios/ is baked into the image - a scenario edit needs a rebuild + redeploy, not just a file copy."
 warn "GH_PAT is written into ${CONTAINER_NAME}'s env on each node and visible via 'docker inspect' there - use a PAT scoped to just this repo's runner administration."
 warn "Node-specific hardware access (e.g. --device /dev/gpiomem, /dev/ttyUSB0) is not added automatically - pass it via EXTRA_DOCKER_RUN_ARGS, matching the single-node instructions in README.md."
+warn "!UsbSwitch (MEGA4 hub) needs raw USB access: add EXTRA_DOCKER_RUN_ARGS='--privileged -v /dev/bus/usb:/dev/bus/usb' on any node with a hub, or every port change is only simulated."
