@@ -116,6 +116,9 @@ firmware/
 # Generated HTML test reports (any output directory, e.g. results/, reports/)
 *.html
 
+# Test run output: reports, per-run logs, !DutStorage copy_from files, etc.
+results/
+
 # Certificates and private keys (e.g. IoT Core device certs for mqtt_listener).
 # Never commit these. The extension patterns are a safety net in case a key is
 # saved outside a certs/ directory. To commit a genuinely public file such as

@@ -334,6 +334,25 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
 *   At the end, it prints each node's container IP (from `docker inspect`
     on that node) alongside its SSH target.
 
+#### Pulling results back from a node
+
+`copy_results_from_rpi.sh` fetches a node's HTML reports, per-run
+`.tool`/`.device`/`.mqtt`/`.cli`/`.combined` logs, and any `!DutStorage`
+`copy_from` output back to this machine:
+
+```bash
+./copy_results_from_rpi.sh rpi1@192.168.1.42 [local_dest]
+```
+
+`local_dest` defaults to `./results`. It goes through `docker cp` first —
+`gora-node:/app/results` on the Pi into a `/tmp` staging dir there — and
+only then `rsync`s that staging dir down to `local_dest`. Reading straight
+from the container rather than assuming a host path means it works
+regardless of where a node's `results/` bind mount actually lives, and
+`rsync` means a repeat run only transfers what changed since the last one.
+Nothing is removed from the container itself; that's what `--clean-results`
+on `main.py` is for (see above).
+
 **QEMU emulation is registered for you.** Before building, the script checks
 whether the active buildx builder reports `linux/arm64` and, if it doesn't,
 runs the privileged `tonistiigi/binfmt` container to register the handlers:
