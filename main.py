@@ -460,6 +460,8 @@ def run_wrapper(wrapper: Wrapper) -> tuple[TestResult, Exception | None]:
         duration_s=duration_s,
         passed=error is None,
         error=str(error) if error is not None else None,
+        group=wrapper.group,
+        group_id=wrapper.group_id,
     )
     return result, error
 
@@ -544,11 +546,16 @@ def _resume_dut_logging(dut_logger: DutLogger | None) -> None:
 
 
 def _mark_command_start(session: LogSession | None, wrapper: Wrapper, index: int, total: int) -> None:
-    """Write the combined log's start marker for one command."""
+    """Write the combined log's start marker for one command.
+
+    The command's `!Group` is appended when it has one, so a group is
+    greppable in the logs and not only visible in the HTML report.
+    """
     if session is None:
         return
     name = wrapper.name if getattr(wrapper, "name", None) else (wrapper.tag or type(wrapper).__name__)
-    session.write_marker(f"CMD {index}/{total} START: {name} (!{wrapper.tag})")
+    group = f" [{wrapper.group}]" if wrapper.group else ""
+    session.write_marker(f"CMD {index}/{total} START: {name} (!{wrapper.tag}){group}")
 
 
 def _mark_command_end(session: LogSession | None, result: TestResult, index: int, total: int) -> None:

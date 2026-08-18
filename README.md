@@ -434,6 +434,7 @@ Every run writes an HTML report once it finishes, whether every command passed o
 *   A masthead with the scenario file name, when the run started, the elapsed time, the number of checks, and links to the log files below.
 *   A pass tally — `passed / total` with a progress meter, coloured green when the run is clean and red when anything failed.
 *   One row per executed command: its `name`, its tag (click to expand its exact YAML source), the `validation` expression it was checked against and what was actually observed (blank for commands with no assertion of their own, such as `!RelayControl` or `!UsbSwitch`), how long it took, and a PASS/FAIL chip (with the error message, if it failed). Failed rows are tinted so they stand out when scanning.
+*   A heading band above each [`!Group`](#group)'s rows, naming the group and carrying its own `passed / total` tally — coloured red when anything inside it failed, so a failing stage is findable without reading every row. A scenario using a plain `commands:` list has no bands at all and looks exactly as it did before.
 *   The total wall-clock time for the run, under the table.
 
 The report is a single self-contained file with no external assets, and follows the light/dark preference of whatever opens it.
@@ -1035,6 +1036,53 @@ Runs nested scenario commands sequentially multiple times.
 *   `name`: (Optional) Descriptive log name.
 *   `iterations`: (Required) Number of loop iterations.
 *   `commands`: (Required) A list of nested scenario commands.
+
+### `!Group`
+Splits a scenario into named stages, so the [test report](#test-report) shows each under a heading with its own pass tally instead of as one flat list of every command in the scenario.
+*   `name`: (Required) The stage's name, shown as the report's heading band.
+*   `commands`: (Required) The commands making up this stage.
+
+Groups live at the **top level** of a scenario, in a `groups:` list that replaces the usual `commands:` one. **Commands nest inside groups, never the other way round** — a `!Group` inside a `commands:` list is rejected.
+
+```yaml
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+groups:
+  - !Group
+    name: "Initialization"
+    commands:
+      - !RelayControl
+        name: "Turn on the device"
+        relay: 1
+        state: 1
+
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 1
+
+  - !Group
+    name: "Flashing"
+    commands:
+      - !ProgramEsptool
+        name: "Flash The Tracker"
+        firmware: "tekpadz.bin"
+```
+
+A scenario declares **either `commands:` or `groups:`, not both** — it is wholly ungrouped or wholly grouped. An existing scenario keeps working untouched (`gateway.yml` still uses a plain `commands:` list); grouping one means wrapping its commands in `!Group` blocks and indenting them, as `tracker.yml` shows.
+
+A group is **purely a label**. It is expanded away when the scenario is parsed, exactly like `!Loop`: the commands inside it run in order, in place, with no setup, teardown or isolation of any kind, and a failure inside one still stops the whole scenario rather than just the group. How a scenario is grouped therefore cannot change what it does — only how its results read.
+
+Four more things:
+
+*   **Groups do not nest.** A `!Group` inside another group's `commands:` is rejected, with the same error as one inside a top-level `commands:` list — the parser would otherwise walk straight past it and silently drop every command under it from the run.
+*   **A `!Loop` inside a group stays in that group.** All its iterations report under the one heading; a loop cannot split its commands across sections.
+*   **Two groups may share a name** and still report as two separate bands, since a group is identified by its position in `groups:` rather than by what it is called.
+*   **`name` is required and must not be blank**, and an entry in `groups:` must actually be tagged `!Group` — a missing `!` is rejected rather than skipped, since that too would drop a whole stage. A group with no `commands` is skipped with a warning, matching how an empty `!Loop` behaves.
+
+Groups also appear in the combined log's command markers (`CMD 3/12 START: Flash The Tracker (!ProgramEsptool) [Flashing]`), so a stage is greppable in the logs and not only visible in the HTML.
 
 ---
 

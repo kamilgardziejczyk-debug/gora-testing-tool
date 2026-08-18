@@ -29,7 +29,13 @@ LOG_LABELS = {
 
 @dataclass
 class TestResult:
-    """One executed command's outcome, ready to render as a report row."""
+    """One executed command's outcome, ready to render as a report row.
+
+    `group` and `group_id` carry the `!Group` the command was nested in, from
+    the wrapper the Parser stamped them onto. They default to None so a
+    command outside any group - and any caller predating groups - needs no
+    change.
+    """
 
     name: str
     tag: str
@@ -39,6 +45,23 @@ class TestResult:
     duration_s: float
     passed: bool
     error: str | None
+    group: str | None = None
+    group_id: int | None = None
+
+
+@dataclass
+class ReportSection:
+    """A run of consecutive results sharing one `!Group`, or an ungrouped run.
+
+    `name` is None for commands that sat outside any group; the template then
+    renders their rows with no heading, so a scenario using no groups at all
+    looks exactly as it did before groups existed.
+    """
+
+    name: str | None
+    results: list[TestResult]
+    passed_count: int
+    total_count: int
 
 
 def generate_report(
@@ -71,12 +94,37 @@ def generate_report(
         started_at=started_at.strftime("%Y-%m-%d %H:%M:%S"),
         total_duration_s=total_duration_s,
         results=results,
+        sections=build_sections(results),
         passed_count=sum(1 for result in results if result.passed),
         failed_count=sum(1 for result in results if not result.passed),
         log_files=_log_file_names(session),
     )
 
     _write_html(html, output_path)
+
+
+def build_sections(results: list[TestResult]) -> list[ReportSection]:
+    """Split `results` into consecutive runs sharing a `!Group`.
+
+    Split on `group_id` rather than on the name, so two adjacent groups that
+    happen to share a name stay two sections - and so a group repeated by a
+    `!Loop` renders once per iteration, which is what the ids were made
+    distinct for.
+
+    Done here rather than in the template because it is the testable half of
+    the grouping: Jinja then only walks the sections it is handed.
+    """
+    sections: list[ReportSection] = []
+
+    for result in results:
+        if not sections or sections[-1].results[0].group_id != result.group_id:
+            sections.append(ReportSection(result.group, [], 0, 0))
+        section = sections[-1]
+        section.results.append(result)
+        section.total_count += 1
+        section.passed_count += 1 if result.passed else 0
+
+    return sections
 
 
 def _log_file_names(session: "LogSession | None") -> list[tuple[str, str]]:

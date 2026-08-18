@@ -194,33 +194,158 @@ def _parse_iterations(loop_body: yaml.MappingNode) -> int:
         return 0
 
 
-def _expand_commands(commands_node: yaml.SequenceNode) -> list[yaml.Node]:
-    """Flatten !Loop blocks into their repeated nested commands."""
-    expanded: list[yaml.Node] = []
+def _parse_group_name(group_node: yaml.MappingNode) -> str:
+    """Extract a !Group's required name.
+
+    Unlike !Loop's `iterations`, a missing value here is raised rather than
+    skipped: a group exists only to label the commands inside it, so one
+    without a name is a scenario-authoring mistake with no sensible default.
+    """
+    name_node = _mapping_get(group_node, "name")
+    if not isinstance(name_node, yaml.ScalarNode) or not name_node.value.strip():
+        raise ValueError("!Group: 'name' is required and must be a non-empty string")
+    return name_node.value.strip()
+
+
+class ExpandedCommand(NamedTuple):
+    """One scenario command, with the !Group (if any) it came from.
+
+    `group` is the group's display name and `group_id` its position in the
+    scenario's `groups:` list, so two groups sharing a name still report as
+    two sections rather than merging into one.
+
+    Both are None for a scenario that uses a top-level `commands:` list, where
+    nothing is grouped at all.
+    """
+
+    node: yaml.Node
+    group: str | None
+    group_id: int | None
+
+
+def _expand_scenario(document: yaml.Node) -> list[ExpandedCommand]:
+    """Expand a scenario's top-level `commands:` or `groups:` into commands.
+
+    The two are alternatives, not siblings: a scenario is either wholly
+    ungrouped (a flat `commands:` list) or wholly grouped (a `groups:` list of
+    !Group blocks, each with its own `commands:`). Declaring both is rejected
+    rather than silently running one and ignoring the other, since which would
+    win - and in what order - is not something the file says.
+    """
+    if not isinstance(document, yaml.MappingNode):
+        return []
+
+    commands_node = _mapping_get(document, "commands")
+    groups_node = _mapping_get(document, "groups")
+
+    if commands_node is not None and groups_node is not None:
+        raise ValueError(
+            "A scenario declares either a top-level 'commands:' list or a top-level "
+            "'groups:' list, not both. Move the loose commands into a !Group."
+        )
+
+    if groups_node is not None:
+        if not isinstance(groups_node, yaml.SequenceNode):
+            raise ValueError("groups: must be a list of !Group blocks")
+        return _expand_groups(groups_node)
+
+    if isinstance(commands_node, yaml.SequenceNode):
+        return _expand_commands(commands_node, None, None)
+
+    return []
+
+
+def _expand_groups(groups_node: yaml.SequenceNode) -> list[ExpandedCommand]:
+    """Expand each top-level !Group into its commands, stamped with its name.
+
+    Groups do not nest and cannot contain each other: a group's `commands:`
+    holds commands (and !Loop blocks), so the id is simply the group's
+    position in the list rather than anything the recursion has to carry.
+    """
+    expanded: list[ExpandedCommand] = []
+
+    for group_id, group_node in enumerate(groups_node.value, start=1):
+        if not isinstance(group_node, yaml.MappingNode):
+            continue
+
+        group_tag = group_node.tag.lstrip("!").rstrip(":")
+        if group_tag != "Group":
+            found = (
+                "untagged - check for a missing leading '!'"
+                if group_node.tag == "tag:yaml.org,2002:map"
+                else f"tagged {group_tag!r}"
+            )
+            raise ValueError(
+                f"groups: takes !Group blocks, but entry {group_id} is {found}. "
+                f"Commands belong inside a !Group's own 'commands:' list."
+            )
+
+        name = _parse_group_name(group_node)
+        commands_node = _mapping_get(group_node, "commands")
+
+        if not isinstance(commands_node, yaml.SequenceNode) or not commands_node.value:
+            LOGGER.warning("Skipping !Group %r: it has no commands", name)
+            continue
+
+        LOGGER.info("Expanding !Group %r", name)
+        expanded.extend(_expand_commands(commands_node, name, group_id))
+
+    return expanded
+
+
+def _expand_commands(
+    commands_node: yaml.SequenceNode,
+    group: str | None,
+    group_id: int | None,
+) -> list[ExpandedCommand]:
+    """Flatten a commands list, expanding !Loop blocks, under one group.
+
+    A !Group here is rejected. Commands nest inside groups, never the other
+    way round - and a group the parser silently walked past would drop every
+    command under it from the run.
+    """
+    expanded: list[ExpandedCommand] = []
 
     for command_node in commands_node.value:
         if not isinstance(command_node, yaml.MappingNode):
-            expanded.append(command_node)
+            expanded.append(ExpandedCommand(command_node, group, group_id))
             continue
 
         command_tag = command_node.tag.lstrip("!").rstrip(":")
-        if command_tag != "Loop":
-            expanded.append(command_node)
-            continue
-
-        iterations = _parse_iterations(command_node)
-        nested_commands_node = _mapping_get(command_node, "commands")
-
-        if not isinstance(nested_commands_node, yaml.SequenceNode) or iterations <= 0:
-            LOGGER.info("Skipping empty/invalid loop block")
-            continue
-
-        LOGGER.info("Expanding !Loop with iterations=%s", iterations)
-        nested_expanded = _expand_commands(nested_commands_node)
-        for _ in range(iterations):
-            expanded.extend(nested_expanded)
+        if command_tag == "Group":
+            raise ValueError(
+                "!Group belongs at the top level, in the scenario's 'groups:' list - "
+                "it cannot appear inside a 'commands:' list. Commands nest inside "
+                "groups, not the other way round."
+            )
+        if command_tag == "Loop":
+            expanded.extend(_expand_loop(command_node, group, group_id))
+        else:
+            expanded.append(ExpandedCommand(command_node, group, group_id))
 
     return expanded
+
+
+def _expand_loop(
+    loop_node: yaml.MappingNode,
+    group: str | None,
+    group_id: int | None,
+) -> list[ExpandedCommand]:
+    """Repeat a !Loop's nested commands, once per iteration.
+
+    The whole loop sits inside one group, so every iteration carries that
+    group - a loop cannot split its commands across sections.
+    """
+    iterations = _parse_iterations(loop_node)
+    nested_commands_node = _mapping_get(loop_node, "commands")
+
+    if not isinstance(nested_commands_node, yaml.SequenceNode) or iterations <= 0:
+        LOGGER.info("Skipping empty/invalid loop block")
+        return []
+
+    LOGGER.info("Expanding !Loop with iterations=%s", iterations)
+    nested_expanded = _expand_commands(nested_commands_node, group, group_id)
+    return nested_expanded * iterations
 
 
 class Parser:
@@ -291,20 +416,17 @@ class Parser:
 
         wrappers: list[Wrapper] = []
 
-        if isinstance(document, yaml.MappingNode):
-            commands_node = _mapping_get(document, "commands")
-            if isinstance(commands_node, yaml.SequenceNode):
-                expanded_commands = _expand_commands(commands_node)
-                for expanded_command in expanded_commands:
-                    if not isinstance(expanded_command, yaml.MappingNode):
-                        continue
-                    wrapper = self._parse_wrapper_for_command(expanded_command, document_text)
-                    if wrapper is not None:
-                        wrappers.append(wrapper)
+        for expanded_command in _expand_scenario(document):
+            if not isinstance(expanded_command.node, yaml.MappingNode):
+                continue
+            wrapper = self._parse_wrapper_for_command(expanded_command, document_text)
+            if wrapper is not None:
+                wrappers.append(wrapper)
 
         return wrappers
 
-    def _parse_wrapper_for_command(self, command_node: yaml.MappingNode, document_text: str) -> Wrapper | None:
+    def _parse_wrapper_for_command(self, expanded_command: ExpandedCommand, document_text: str) -> Wrapper | None:
+        command_node = expanded_command.node
         command_tag = command_node.tag.lstrip("!").rstrip(":")
         wrapper_class = WRAPPER_BY_TAG.get(command_tag)
         if wrapper_class is None:
@@ -324,6 +446,8 @@ class Parser:
         wrapper = wrapper_class(command_node)
         wrapper.scenario_dir = self.file_path.parent
         wrapper.tag = command_tag
+        wrapper.group = expanded_command.group
+        wrapper.group_id = expanded_command.group_id
         wrapper.raw_yaml = document_text[command_node.start_mark.index:command_node.end_mark.index].strip()
         wrapper.parse()
         wrapper.wait_after_s = _parse_wait_after_s(command_node)

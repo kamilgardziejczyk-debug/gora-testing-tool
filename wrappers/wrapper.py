@@ -28,6 +28,13 @@ class Wrapper(ABC):
     is that command's exact source text, so the report can show what was
     configured without each wrapper re-serializing its own fields.
 
+    `group` and `group_id` name the `!Group` this command came from, and stay
+    `None` in a scenario built from a plain top-level `commands:` list. `group`
+    is the display name; `group_id` is the group's position in the scenario's
+    `groups:` list, so two groups sharing a name still report separately. Both
+    are set by the Parser, which expands `!Group` away entirely - there is no
+    group left to execute by the time a wrapper runs.
+
     `validation_expected` / `validation_actual` stay `None` for wrappers with
     no pass/fail assertion of their own. A wrapper that does have one (like
     `!MqttExpect`) sets both, so the report can render them uniformly without
@@ -61,6 +68,8 @@ class Wrapper(ABC):
     wait_after_s: float | None = None
     scenario_dir: Path | None = None
     tag: str | None = None
+    group: str | None = None
+    group_id: int | None = None
     raw_yaml: str | None = None
     validation_expected: str | None = None
     validation_actual: str | None = None

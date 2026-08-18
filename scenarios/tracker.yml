@@ -28,6 +28,11 @@
 # The wait for the reboot after esptool's hard reset sits on the *resume*, not
 # on the flash: capture is running by then, so the tracker's whole boot lands
 # in the device log instead of being slept through with nothing listening.
+#
+# The commands are split across four !Group blocks so the report reads as four
+# stages rather than sixteen flat rows. A group is a label and nothing else -
+# the commands inside it run in order, in place - so how they are grouped
+# cannot change what this scenario does. See README.md.
 
 dut_log:
   port: "/dev/ttyUSB0"
@@ -38,99 +43,114 @@ usb_hub:
     dut_storage: 1
 
 
-commands:
+groups:
   # Connect USB and power on the device
-  - !UsbSwitch
-    name: "Connect storage USB"
-    port: dut_storage
-    state: 0
-    wait_after_s: 1
+  - !Group
+    name: "Initialization"
+    commands:
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
 
-  - !RelayControl
-    name: "Turn on the device"
-    relay: 1
-    state: 1
-    wait_after_ms: 100
+      - !RelayControl
+        name: "Turn on the device"
+        relay: 1
+        state: 1
+        wait_after_ms: 100
 
-  # Flash the device
-  - !DutLogControl
-    name: "Release The Console For Flashing"
-    state: 0
+  # Flash the device. Both !DutLogControl commands are in this group with the
+  # flash they bracket: the resume is the other half of the release, not a
+  # stage of its own.
+  - !Group
+    name: "Flashing"
+    commands:
+      - !DutLogControl
+        name: "Release The Console For Flashing"
+        state: 0
 
-  - !ProgramEsptool:
-    name: "Flash The Tracker"
-    bootloader: "bootloader.bin"
-    partition_table: "partition-table.bin"
-    firmware: "tekpadz.bin"
-    port: "/dev/ttyUSB0"
-    timeout_s: 20
+      - !ProgramEsptool:
+        name: "Flash The Tracker"
+        bootloader: "bootloader.bin"
+        partition_table: "partition-table.bin"
+        firmware: "tekpadz.bin"
+        port: "/dev/ttyUSB0"
+        timeout_s: 20
 
-  # Power on the device and start the test
-  - !DutLogControl
-    name: "Capture The Console Again"
-    state: 1
-    wait_after_s: 20
+  - !Group
+    name: "Tracker Mode"
+    commands:
+      # Power on the device and start the test
+      - !DutLogControl
+        name: "Capture The Console Again"
+        state: 1
+        wait_after_s: 20
 
   # ... Let the device working ...
 
   # Mount the SD Card and read data files
-  - !UsbSwitch
-    name: "Connect storage USB"
-    port: dut_storage
-    state: 1
+  - !Group
+    name: "Mass Storage Mode"
+    commands:
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 1
 
-  - !DutLogExpect:
-    name: "Device Hands The Card To The Host"
-    validation: 'matches({line}, "USB Storage is now ACTIVE")'
-    timeout_s: 30
+      - !DutLogExpect:
+        name: "Device Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        timeout_s: 30
 
-  - !DutStorage:
-    name: "Mount The Card"
-    port: dut_storage
-    action: mount
-    mode: rw
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+        mode: rw
 
-  - !DutStorage:
-    name: "Card Holds A Log Directory"
-    action: list
-    path: "/"
-    validation: "len(matching('session_*', {dirs})) >= 2"
+      - !DutStorage:
+        name: "Card Holds A Log Directory"
+        action: list
+        path: "/"
+        validation: "len(matching('session_*', {dirs})) >= 2"
 
-  - !DutStorage:
-    name: "Pull The Logs Off The Card"
-    action: copy_from
-    path: "/session*"
-    dest: "../results/sd"
+      - !DutStorage:
+        name: "Pull The Logs Off The Card"
+        action: copy_from
+        path: "/session*"
+        dest: "../results/sd"
 
-  - !DutStorage:
-    name: "Clear The Session Directories"
-    action: delete
-    path: "/session_*"
+      - !DutStorage:
+        name: "Clear The Session Directories"
+        action: delete
+        path: "/session_*"
 
-  - !DutStorage:
-    name: "Unmount The Card"
-    action: unmount
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
 
-  - !DutStorage:
-    name: "Eject The Card"
-    port: dut_storage
-    action: eject
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
 
-  - !DutLogExpect:
-    name: "Device Reclaims The Card On Eject"
-    validation: 'matches({line}, "Storage control returned to ESP32")'
-    timeout_s: 15
+      - !DutLogExpect:
+        name: "Device Reclaims The Card On Eject"
+        validation: 'matches({line}, "Storage control returned to ESP32")'
+        timeout_s: 15
 
-  
   # Clean up after tests
-  - !UsbSwitch
-    name: "Disconnect storage USB"
-    port: dut_storage
-    state: 0
+  - !Group
+    name: "Teardown"
+    commands:
+      - !UsbSwitch
+        name: "Disconnect storage USB"
+        port: dut_storage
+        state: 0
 
-
-  - !RelayControl
-    name: "Turn off the device"
-    relay: 1
-    state: 0
-    wait_after_ms: 100
+      - !RelayControl
+        name: "Turn off the device"
+        relay: 1
+        state: 0
+        wait_after_ms: 100
