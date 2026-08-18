@@ -947,6 +947,27 @@ Three things to know:
 
     The expression syntax now lets you *write* that mistake, so it is worth stating plainly: this tag waits for its expression to become **true**, so a negative one — `'not matches({log}, r"PANIC")'` — is already true before the DUT has said anything and passes instantly, testing nothing. Assert what the DUT must say, not what it must not.
 
+**Waiting for something physical is the same tag with a longer `timeout_s`.** `scenarios/tracker.yml` waits for the tracker to catch a GNSS fix this way — the receiver reports its own progress, so no separate poll or CLI query is needed:
+
+```yaml
+  - !DutLogExpect:
+    name: "GNSS Positioning Starts"
+    validation: 'matches({line}, r"GNSS positioning started")'
+    timeout_s: 30
+
+  - !DutLogExpect:
+    name: "Device Acquires A GNSS Fix"
+    validation: 'matches({line}, r"GNSS FIX ACQUIRED with [0-9]+ satellites")'
+    timeout_s: 300
+
+  - !DutLogExpect:
+    name: "Tracker Enters The Active State"
+    validation: 'matches({line}, r"GNSS: GNSS_WAITING_FIX -> GNSS_ACTIVE")'
+    timeout_s: 10
+```
+
+Three habits worth copying from it. **Check that the subsystem started before waiting on its result** — a receiver that failed to start (`Failed to start GNSS positioning`) would otherwise sit out the full five minutes below, reported as "no fix" when the real fault was bring-up. **Size the timeout to the physics, not to the rest of the scenario** — a cold start with no almanac takes 30 s under open sky and minutes through a window, so 300 s fails a tracker that cannot see the sky without failing one that is merely slow; a node with an indoor antenna needs that number raised, not the check dropped. And **assert the state change, not only the log line** — the fix line and the FSM transition it triggers are separate events, and it is the transition that starts SD recording, so a later card check failing for want of it would look unrelated to GNSS entirely.
+
 A failed match **fails the scenario**, logging how many lines were examined and the last 15 the DUT emitted, so the report shows what it *was* saying. If lines have been evicted from the in-memory buffer (over 5000 captured), the failure says so rather than implying the DUT definitely never emitted the line — `device.log` remains complete either way.
 
 Matching is against the line **as the firmware emitted it**; the `[HH:MM:SS.mmm]` prefix in the log files is added by this tool and is not part of what the expression sees. A timestamp the firmware prints itself — such as the gateway's own `[2026-08-04T06:25:01,707000Z]` — *is* matchable, which makes `validation: 'matches({line}, r"^\[19[0-9]{2}-")'` a way to spot a device still running on an unsynced 1970 clock.
