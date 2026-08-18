@@ -39,6 +39,14 @@ class CardReadOnlyError(MassStorageError):
     """A scenario tried to change a card mounted read-only."""
 
 
+class CardCopyError(MassStorageError):
+    """One or more items matched by `copy_from` could not be copied.
+
+    Raised only after every match has been attempted - a card with one bad
+    sector must not cost the run everything else it could have collected.
+    """
+
+
 @dataclass(frozen=True)
 class Listing:
     """What one directory on the card holds."""
@@ -109,20 +117,62 @@ def copy_from(mount: Mount, pattern: str, dest: Path) -> list[str]:
     Matching nothing raises rather than returning an empty list: a scenario
     that meant to collect the DUT's logs and collected none has found a
     problem, and reporting success with an empty directory would hide it.
+
+    Each match is copied independently, and a failure on one does not stop
+    the rest from being attempted - matches are processed in sorted order,
+    so on a card carrying unrelated cruft ahead of the DUT's own directories
+    (alphabetically first, or otherwise), one unreadable item must not cost
+    the run everything after it. Only once every match has been tried does a
+    failure raise, as `CardCopyError` naming what could not be copied and
+    what was salvaged despite it.
     """
     matches = sorted(_matching(mount, pattern))
     if not matches:
         raise CardPathNotFoundError(f"nothing on the card matches '{pattern}'")
 
     dest.mkdir(parents=True, exist_ok=True)
-    copied = []
+    copied: list[str] = []
+    failed: list[tuple[str, Exception]] = []
     for source in matches:
         relative = source.relative_to(mount.mountpoint)
-        _copy_one(source, dest / relative.name)
-        copied.append(f"/{relative.as_posix()}")
+        card_path = f"/{relative.as_posix()}"
+        try:
+            _copy_one(source, dest / relative.name)
+        except OSError as error:
+            # Also catches shutil.Error, which copytree raises after copying
+            # everything it could - so a directory with one bad file inside
+            # still lands mostly-copied at `dest`, it is just not counted in
+            # `copied` or trusted as complete.
+            LOGGER.warning("Could not copy %s off the card: %s", card_path, error)
+            failed.append((card_path, error))
+        else:
+            copied.append(card_path)
+
+    if failed:
+        raise CardCopyError(_copy_failure_message(pattern, copied, failed))
 
     LOGGER.info("Copied %d item(s) matching '%s' off the card into %s", len(copied), pattern, dest)
     return copied
+
+
+def _copy_failure_message(pattern: str, copied: list[str], failed: list[tuple[str, Exception]]) -> str:
+    """Explain a partial `copy_from`, naming both what failed and what did not.
+
+    Both halves matter: a scenario reading this needs to know the run's data
+    collection is incomplete, but also that everything except the named items
+    is safely at `dest` rather than lost along with them.
+    """
+    broken = "\n".join(f"  {path}: {error}" for path, error in failed)
+    message = (
+        f"DutStorage: {len(failed)} of {len(failed) + len(copied)} item(s) matching "
+        f"'{pattern}' could not be copied off the card:\n{broken}"
+    )
+    if copied:
+        message += (
+            f"\n\nThe other {len(copied)} item(s) were copied successfully and are at "
+            f"the destination."
+        )
+    return message
 
 
 def delete(mount: Mount, pattern: str) -> list[str]:

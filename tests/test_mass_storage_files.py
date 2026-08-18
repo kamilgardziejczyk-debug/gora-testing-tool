@@ -7,15 +7,18 @@ a hub, or root.
 Run with `python3 -m unittest discover tests` from the repository root.
 """
 
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.mass_storage.device import BlockDevice  # noqa: E402
 from tools.mass_storage.files import (  # noqa: E402
+    CardCopyError,
     CardPathNotFoundError,
     CardReadOnlyError,
     PathEscapesCardError,
@@ -130,6 +133,77 @@ class CopyTests(CardTestCase):
     def test_copying_the_root_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "not the card root"):
             copy_from(self.mount, "/", self.dest)
+
+
+class PartialCopyFailureTests(CardTestCase):
+    """A bad match must not cost the run every match after it.
+
+    This is the exact shape of the hardware failure: `.Trash-1000` sorts
+    before `session_*` and was unreadable, so the un-hardened copy_from threw
+    before ever attempting the DUT's own directories.
+    """
+
+    def test_an_early_unreadable_match_does_not_block_later_ones(self):
+        (self.root / ".Trash-1000").mkdir()
+        (self.root / "session_54").mkdir()
+        (self.root / "session_54" / "log.txt").write_text("data\n")
+        dest = Path(self._tmp.name) / "out"
+
+        real_copytree = shutil.copytree
+
+        def flaky_copytree(source, *args, **kwargs):
+            if source.name == ".Trash-1000":
+                raise OSError(5, "Input/output error")
+            return real_copytree(source, *args, **kwargs)
+
+        with mock.patch("tools.mass_storage.files.shutil.copytree", side_effect=flaky_copytree):
+            with self.assertRaises(CardCopyError) as caught:
+                copy_from(self.mount, "/*", dest)
+
+        # The item after the broken one was still attempted and landed at dest.
+        self.assertTrue((dest / "session_54" / "log.txt").is_file())
+        self.assertIn("/.Trash-1000", str(caught.exception))
+        self.assertIn("1 of", str(caught.exception))
+
+    def test_failure_message_names_what_survived(self):
+        (self.root / "broken").mkdir()
+        dest = Path(self._tmp.name) / "out"
+
+        real_copytree = shutil.copytree
+
+        def flaky(source, *args, **kwargs):
+            if source.name == "broken":
+                raise OSError(5, "I/O error")
+            return real_copytree(source, *args, **kwargs)
+
+        with mock.patch("tools.mass_storage.files.shutil.copytree", side_effect=flaky):
+            with self.assertRaises(CardCopyError) as caught:
+                copy_from(self.mount, "/*", dest)
+
+        message = str(caught.exception)
+        self.assertIn("1 of", message)
+        self.assertIn("copied successfully", message)
+        # BOOT.CFG is a plain file (copy2, not copytree) and was not the
+        # broken match, so it must have survived alongside the others.
+        self.assertTrue((dest / "BOOT.CFG").is_file())
+        self.assertTrue((dest / "logs" / "tracker-2026-08-18.log").is_file())
+
+    def test_a_bad_directory_does_not_stop_a_later_file(self):
+        (self.root / "zzz-broken").mkdir()
+        dest = Path(self._tmp.name) / "out"
+
+        real_copytree = shutil.copytree
+
+        def flaky(source, *args, **kwargs):
+            if source.name == "zzz-broken":
+                raise OSError(5, "Input/output error")
+            return real_copytree(source, *args, **kwargs)
+
+        with mock.patch("tools.mass_storage.files.shutil.copytree", side_effect=flaky):
+            with self.assertRaises(CardCopyError):
+                copy_from(self.mount, "/*", dest)
+
+        self.assertTrue((dest / "BOOT.CFG").is_file())
 
 
 class DeleteTests(CardTestCase):

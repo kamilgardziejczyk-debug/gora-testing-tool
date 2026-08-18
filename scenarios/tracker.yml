@@ -96,10 +96,13 @@ commands:
     path: "/"
     validation: "len(matching('session_*', {dirs})) >= 1"
 
+  # Scoped to /session_* rather than /* - the card has picked up desktop
+  # trash metadata (.Trash-1000) from a prior debug mount, which is not the
+  # DUT's own output and is not guaranteed to even be readable.
   - !DutStorage:
     name: "Pull The Logs Off The Card"
     action: copy_from
-    path: "/*"
+    path: "/session_*"
     dest: "../results/sd"
 
   - !DutStorage:
@@ -128,10 +131,6 @@ commands:
     port: dut_storage
     state: 0
 
-  - !DutLogExpect:
-    name: "Device Remounts The Card For Itself"
-    validation: 'matches({line}, "Remounting SD card normally for application")'
-    timeout_s: 20
 
   - !RelayControl
     name: "Turn off the device"

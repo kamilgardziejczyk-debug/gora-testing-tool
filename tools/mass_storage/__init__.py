@@ -17,6 +17,7 @@ from .device import (
     usb_device_path,
 )
 from .files import (
+    CardCopyError,
     CardPathNotFoundError,
     CardReadOnlyError,
     FileContent,
@@ -46,6 +47,7 @@ from .mount import (
 )
 
 __all__ = [
+    "CardCopyError",
     "CardPathNotFoundError",
     "CardReadOnlyError",
     "CommandError",
