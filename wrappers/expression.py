@@ -28,6 +28,7 @@ tags pass their patterns through here as string literals.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import io
 import re
 import tokenize
@@ -122,6 +123,21 @@ def _matches(text: str, pattern: str) -> bool:
         raise ValueError(f"matches(): '{pattern}' is not a valid regular expression ({error})") from None
 
 
+def _matching(pattern: str, items: Iterable[str]) -> list[str]:
+    """The items matching a shell-style glob, e.g. `matching("session_*", {dirs})`.
+
+    Exists because `in` is exact membership, and the `path` fields of the same
+    tags take globs - so `'session_*' in {dirs}` reads as though it should
+    pattern-match and quietly does not. This gives the glob an obvious spelling
+    instead.
+
+    Returns the matches rather than a bool so it composes: an empty list is
+    falsey, which makes a bare `matching(...)` mean "at least one", while
+    `len(matching(...)) == 3` counts them and `in` checks a specific one.
+    """
+    return fnmatch.filter(list(items), pattern)
+
+
 # Callables an expression may use. Deliberately small: these are the ones that
 # turn a list of names into an assertion, and nothing here touches the runner,
 # the filesystem, or the scenario.
@@ -134,6 +150,7 @@ BUILTINS: dict[str, Any] = {
     "int": int,
     "len": len,
     "matches": _matches,
+    "matching": _matching,
     "max": max,
     "min": min,
     "set": set,

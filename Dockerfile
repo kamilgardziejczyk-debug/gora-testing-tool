@@ -71,6 +71,13 @@ ARG RUNNER_ARCH=arm64
 # tooling below does. Without it tools/usb_hub falls back to *simulating* every
 # port change - loudly, but a scenario would still pass - so it is installed
 # here rather than left to the node.
+# sg3-utils provides `sg_start`, which is how !DutStorage ejects the DUT's SD
+# card. The eject is not cosmetic: it is the only signal the tracker firmware
+# receives that the host has finished with the card, so without it the
+# device-side hand-off cannot be tested at all. `eject(1)` is deliberately not
+# used - it unmounts as a side effect, blurring two steps a scenario needs to
+# take separately. mount/umount/lsblk come from util-linux, already in the
+# base image. dosfstools is for inspecting a card that will not mount.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tzdata \
         curl \
@@ -80,6 +87,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bluez \
         uhubctl \
         libusb-1.0-0 \
+        sg3-utils \
+        dosfstools \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/venv \

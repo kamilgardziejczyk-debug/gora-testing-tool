@@ -5,6 +5,7 @@ from .program_jlink_wrapper import ProgramJlinkWrapper
 from .execute_command_wrapper import ExecuteCommandWrapper
 from .relay_control_wrapper import RelayControlWrapper, cleanup_all as relay_cleanup_all
 from .usb_switch_wrapper import UsbSwitchWrapper, restore_all as usb_switch_restore_all
+from .dut_storage_wrapper import DutStorageWrapper, restore_all as dut_storage_restore_all
 from .subghz_sim_wrapper import SubghzSimWrapper
 from .ble_central_wrapper import BleCentralWrapper
 from .dut_log_expect_wrapper import DutLogExpectWrapper

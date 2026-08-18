@@ -90,6 +90,32 @@ class SimpleComparisonTests(unittest.TestCase):
         self.assertIsNone(expression.as_simple_comparison())
 
 
+class MatchingTests(unittest.TestCase):
+    """`in` is exact membership; a glob needs matching()."""
+
+    DIRS = {"dirs": [".Trash-1000", "session_54", "session_55", "logs"]}
+    VARS = ("dirs", "files", "count")
+
+    def test_a_glob_literal_is_not_membership(self):
+        """The trap: 'session_*' in {dirs} reads as a pattern and is not one."""
+        self.assertFalse(check("'session_*' in {dirs}", self.DIRS, self.VARS))
+
+    def test_matching_finds_them(self):
+        self.assertTrue(check("matching('session_*', {dirs})", self.DIRS, self.VARS))
+
+    def test_empty_result_is_falsey(self):
+        self.assertFalse(check("matching('nothing_*', {dirs})", self.DIRS, self.VARS))
+
+    def test_matching_composes_with_len(self):
+        self.assertTrue(check("len(matching('session_*', {dirs})) == 2", self.DIRS, self.VARS))
+
+    def test_matching_is_case_sensitive_like_the_path_globs(self):
+        self.assertFalse(check("matching('SESSION_*', {dirs})", self.DIRS, self.VARS))
+
+    def test_question_mark_wildcard(self):
+        self.assertTrue(check("len(matching('session_5?', {dirs})) == 2", self.DIRS, self.VARS))
+
+
 class RejectionTests(unittest.TestCase):
     def test_bare_variable_name_rejected(self):
         with self.assertRaisesRegex(ExpressionError, r"write '\{files\}'"):

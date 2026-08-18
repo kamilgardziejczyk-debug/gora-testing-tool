@@ -19,7 +19,13 @@ from tools.dut_logger import (
     attach as attach_log_handler,
 )
 from tools.usb_hub import Switchboard, UsbHub
-from wrappers import Wrapper, mqtt_registry, relay_cleanup_all, usb_switch_restore_all
+from wrappers import (
+    Wrapper,
+    dut_storage_restore_all,
+    mqtt_registry,
+    relay_cleanup_all,
+    usb_switch_restore_all,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -457,6 +463,10 @@ def run_scenario(
         # energized, the next run finds a dark DUT, and this run leaves no record.
         mqtt_registry.close_all()
         relay_cleanup_all()
+        # Before the USB ports are restored: an unmount must happen while the
+        # card's device still exists, and usb_switch_restore_all can power a
+        # port back on but never puts back one this scenario cut.
+        dut_storage_restore_all()
         usb_switch_restore_all(switchboard)
         _resume_dut_logging(dut_logger)
 

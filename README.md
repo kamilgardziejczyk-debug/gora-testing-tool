@@ -1,6 +1,6 @@
 # Gora Testing Tool
 
-An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, control relays (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, drive a device's Zephyr shell over UART, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
+An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, control relays (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, drive a device's Zephyr shell over UART, mount and inspect a device's SD card exposed over USB mass storage, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
 
 ---
 
@@ -182,6 +182,37 @@ docker run --rm \
 *   `firmware:` values in the YAML (e.g. `zephyr.hex`) resolve the same as
     outside Docker, against whatever `firmware_dir`/`--firmware` gives —
     typically the mounted `/app/firmware`.
+
+#### Running `!DutStorage` scenarios in Docker
+
+Mounting the DUT's SD card needs more than the USB passthrough above, because
+a mount is a kernel operation on a block device that does not exist yet when
+the container starts:
+
+```bash
+docker run --rm \
+  --privileged \
+  -v /dev:/dev \
+  -e TZ=Europe/Dublin \
+  -v "$PWD/results:/app/results" \
+  gora-testing-tool \
+  -t scenarios/tracker.yml
+```
+
+*   **`-v /dev:/dev`, not `--device`.** `--device` bindings are resolved once
+    at container start, and the card's block device only appears when the port
+    is powered mid-scenario. This is the same reason the J-Link notes give for
+    a DUT that re-enumerates.
+*   **`--privileged`** supplies `CAP_SYS_ADMIN`, without which `mount` is
+    refused. The image runs as root already, which is necessary but not
+    sufficient on its own.
+*   The image bundles `sg3-utils` for `sg_start`, which is how the card is
+    ejected. Without it the eject step fails naming the missing binary — and
+    it matters, because the eject is the only part of the sequence the DUT
+    firmware actually observes.
+*   Mounts are made under `/run/gora/`, inside the container's own mount
+    namespace. The host does not see them, which is what you want: a mount
+    that leaked into the host would outlive the run.
 
 #### Running as a GitHub Actions self-hosted runner
 
@@ -468,11 +499,25 @@ Braces are what make a scenario readable at a glance: `{count}` is plainly the t
 Which variables exist depends on the tag, and each tag's section below lists its own. What every expression may use:
 
 *   **Operators**: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, `and`, `or`, `not`, and arithmetic.
-*   **Functions**: `len`, `any`, `all`, `sorted`, `sum`, `min`, `max`, `abs`, `int`, `str`, `float`, `bool`, `set`, and `matches(text, pattern)`.
+*   **Functions**: `len`, `any`, `all`, `sorted`, `sum`, `min`, `max`, `abs`, `int`, `str`, `float`, `bool`, `set`, `matches(text, pattern)` and `matching(pattern, items)`.
 *   **String methods**: `.startswith()`, `.endswith()`, `.lower()`, `.upper()`, `.strip()`, `.lstrip()`, `.rstrip()`, `.split()`, `.replace()`, `.find()`, `.count()`.
 *   **List literals and comprehensions**: `{count} in [1, 2, 3]`, `any(f.endswith(".log") for f in {files})`.
 
 Anything else — an import, a lambda, an assignment, an attribute outside that method list — is rejected when the scenario loads, naming what was disallowed. This is a guard against typos and accidents, not a security boundary: `!ExecuteCommand` already runs arbitrary shell, so it makes no attempt to contain a scenario author who means harm.
+
+#### Globs: `matching(pattern, items)`
+
+`in` is **exact membership**, not pattern matching. `'session_*' in {dirs}` asks whether a directory is literally named `session_*`, which nothing ever is — so it is always false, even on a card full of `session_54`, `session_55` and so on. This is an easy trap because the `path` field of the same tags *does* take globs.
+
+`matching(pattern, items)` is the glob:
+
+```yaml
+validation: "matching('session_*', {dirs})"                # at least one
+validation: "len(matching('session_*', {dirs})) >= 10"     # how many
+validation: "matching('*.log', {files}) == ['boot.log']"   # exactly which
+```
+
+It returns the matching items rather than a bool, so it composes. An empty list is falsey, which is what makes the bare form read as "at least one". Shell-style wildcards (`*`, `?`, `[seq]`) and case-sensitive, matching the `path` globs.
 
 #### Regular expressions
 
@@ -582,6 +627,86 @@ commands:
 ```
 
 Both the block and each of its fields are optional: with no block at all, the only attached MEGA4 is discovered automatically and ports are addressed by number. Names are resolved *before the first command runs*, so a typo fails the scenario immediately rather than half way through a run that has already flashed the DUT.
+
+### `!DutStorage`
+
+Mounts the DUT's SD card, exposed over USB mass storage, and asserts on what is on it. Needs the card's hub port to be named in the scenario's `usb_hub` block, the same one `!UsbSwitch` powers.
+
+The card is mounted the way any host would mount it, rather than read as raw blocks, because **the firmware's hand-off of the card is itself under test**. The tracker gives the card to the host by unmounting it from its own filesystem, and takes it back in two distinct steps: an eject returns control to the ESP32, and only the later loss of VBUS makes it re-mount the card for its own use. A raw-block reader would trigger neither, and would report a passing test against a firmware whose hand-off was broken.
+
+That is why `mount`, `unmount` and `eject` are separate commands rather than something the file actions do implicitly — they are the steps being tested.
+
+```yaml
+  - !DutStorage:
+    name: "Mount The Card"
+    port: dut_storage
+    action: mount
+
+  - !DutStorage:
+    name: "Card Holds A Log Directory"
+    action: list
+    path: "/"
+    validation: "'logs' in {dirs}"
+```
+
+*   `name`: (Optional) Descriptive log name.
+*   `action`: (Required) One of `mount`, `unmount`, `eject`, `list`, `read`, `copy_from`, `delete`.
+*   `port`: (Required for `mount` and `eject`) A port number, or a name from the scenario's `usb_hub.ports` block.
+*   `path`: (Required for `read`, `copy_from` and `delete`; optional for `list`, default `/`) A path **on the card**, not on the host. Resolved and then checked to still be inside the mount, so a `path` of `../../etc` is rejected rather than quietly reading the test node's own filesystem.
+*   `dest`: (Required for `copy_from`) Host directory to copy into, relative to the **scenario file's** directory.
+*   `mode`: (Optional, `mount` only) `ro` (default) or `rw`. Opt-in per command rather than a scenario-level default — a wrong `path` under `rw` writes to the DUT's card. `delete` needs the card mounted `rw`; everything else works read-only.
+*   `settle_timeout_s`: (Optional, `mount`/`eject`) Seconds to wait for the card to enumerate after the port is powered. Defaults to `15`. Named distinctly from `timeout_s` because it genuinely is a poll budget, which is the opposite of what `timeout_s` means on `!DutCli`.
+*   `validation`: (Optional) A [validation expression](#validation-expressions). Variables depend on the action:
+
+    | Action | Variables |
+    | --- | --- |
+    | `list` | `{files}` `list[str]`, `{dirs}` `list[str]`, `{entries}` `list[str]` — all sorted, not recursive. No `{count}`: with both lists in scope it could only be ambiguous, so write `len({dirs})` or `len(matching('session_*', {dirs}))` |
+    | `read` | `{content}` `str`, `{lines}` `list[str]`, `{size}` `int` (bytes, not decoded characters) |
+    | `copy_from` | `{copied}` `list[str]` card-relative paths, `{count}` `int` |
+    | `delete` | `{deleted}` `list[str]` card-relative paths, `{count}` `int` |
+    | `mount`, `unmount`, `eject` | none — a `validation` on these is rejected when the scenario loads |
+
+Things to know:
+
+*   **`umount` alone does not reach the firmware.** Linux `umount` flushes and detaches the filesystem; it never sends SCSI `START_STOP_UNIT`. Only `eject` does. Keeping them apart is also what lets a scenario test the cable-yank path — unmount, then cut power without ejecting — as deliberately as the clean one.
+*   **The block device is found by hub port, never by scanning `/dev`.** `/dev/sd*` ordering is not stable across runs, and a rig that guesses wrong writes to whichever disk it picked — on a Raspberry Pi node, quite possibly its own. Discovery walks sysfs from the port, so a wrong answer is an error rather than a wrong disk.
+*   **The runner unmounts anything still mounted when the scenario ends**, before it restores USB port power. A card left mounted when `!UsbSwitch` cuts VBUS leaves the kernel with a filesystem whose device has vanished; anything touching it blocks uninterruptibly, which outlives the run and takes the next one with it. `eject` refuses while the card is still mounted for the same reason.
+*   **Assert on the firmware's side with `!DutLogExpect`.** None of the device's state machine is visible from the host. The lines worth checking are `USB Storage is now ACTIVE` (card handed over), `Storage control returned to ESP32` (eject received), and `Remounting SD card normally for application` (card reclaimed after VBUS drops). Leave those checks on the default `since: scenario` — the line arrives while the previous command is still finishing, so a check looking only forward from its own start can miss it.
+*   **Throughput is limited.** The tracker is a full-speed USB device, so expect around 1 MB/s. Keep `copy_from` scoped to a subdirectory rather than the whole card.
+
+#### Clearing the card (`delete`)
+
+A scenario that asserts on the logs a firmware wrote wants to know they are *this* run's logs. The cheapest way to be sure is to start from a card with none:
+
+```yaml
+  - !DutStorage:
+    name: "Mount The Card For Writing"
+    port: dut_storage
+    action: mount
+    mode: rw
+
+  - !DutStorage:
+    name: "Clear Last Run's Logs"
+    action: delete
+    path: "/logs/*"
+
+  - !DutStorage:
+    name: "Clear Every Session Directory"
+    action: delete
+    path: "**/session-*"
+```
+
+`path` takes the same globs the other actions do, including `**` to match at any depth — which is how you delete every directory of a given name without knowing where they are. Note that `**` walks the whole card, and the card is on a full-speed link.
+
+Three things behave differently from the read-only actions:
+
+*   **Matching nothing is a success, not a failure.** This is the opposite of `copy_from`, which fails when it collects nothing. Clearing a card has to be idempotent: the same scenario run twice would otherwise fail the second time precisely because the first one worked. Assert on `{count}` if you do care that something was there.
+*   **A directory is deleted with everything under it.** That is the point — a firmware writing one directory per session leaves exactly that to clear — but it means a too-broad glob is not recoverable. There is no undo and no trash.
+*   **It refuses on a read-only card**, naming the fix, rather than surfacing a read-only-filesystem errno from inside the copy machinery.
+
+The card root itself (`path: "/"`) is rejected, and a path or glob resolving outside the mount is rejected — `"/../*"` reaches the test node's own filesystem otherwise, which is a check that genuinely fires rather than a theoretical one.
+
+`scenarios/tracker.yml` runs the full sequence end to end. The standalone CLI (`python3 tools/mass_storage/mass_storage.py -l 1-1.2 -p 1 discover`) drives the same code by hand, which is the way to confirm an eject reaches the firmware before a scenario depends on it.
 
 ### `!ExecuteCommand` (or `!ExecuteCommand:`)
 Runs a host terminal command using shell execution.

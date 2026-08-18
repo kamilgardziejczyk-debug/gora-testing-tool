@@ -11,6 +11,7 @@ from wrappers import (
     DutCliWrapper,
     DutLogControlWrapper,
     DutLogExpectWrapper,
+    DutStorageWrapper,
     ExecuteCommandWrapper,
     MqttDisconnectWrapper,
     MqttExpectWrapper,
@@ -40,6 +41,7 @@ WRAPPER_BY_TAG = {
     "DutLogExpect": DutLogExpectWrapper,
     "DutLogControl": DutLogControlWrapper,
     "DutCli": DutCliWrapper,
+    "DutStorage": DutStorageWrapper,
 }
 
 

@@ -1,7 +1,13 @@
 # Design: reading the DUT's SD card over USB mass storage
 
-Status: **proposed**, not implemented.
+Status: **implemented**, pending verification on real hardware.
 Depends on: the `validation` expression language (`wrappers/expression.py`), already in place.
+
+Implemented as `tools/mass_storage/` (discovery, mount lifecycle, file access,
+CLI) and `wrappers/dut_storage_wrapper.py` (the `!DutStorage` tag), with
+`scenarios/tracker.yml` running the full sequence. Section 6 records what each
+step became. The one thing still outstanding is section 7's first item: none
+of this has been run against a real tracker yet.
 
 ## 1. Goal
 
@@ -196,7 +202,10 @@ Per action, in the brace syntax the other tags now use:
 | `{files}` | `list[str]` | file names, sorted |
 | `{dirs}` | `list[str]` | subdirectory names, sorted |
 | `{entries}` | `list[str]` | both, sorted |
-| `{count}` | `int` | `len({entries})` |
+
+No `{count}` here, unlike the actions below: with `{files}` and `{dirs}` both
+in scope it could only be ambiguous about which it counted, and it misled in
+exactly that way on the first hardware run. `len({dirs})` says which.
 
 **`read`** — the single file at `path`:
 
@@ -237,32 +246,68 @@ console rather than in anything readable from the host.
 
 ## 6. Development steps
 
-1.  `tools/mass_storage/device.py` — port-anchored sysfs discovery.
-    `find_block_device(hub_location, port, settle_timeout_s)`, returning the
-    partition node (whole-disk fallback for a superfloppy), with an error
-    naming the port when nothing appears.
-2.  `tools/mass_storage/mount.py` — `mount` / `unmount` / `eject`, with the
-    error classes `tools/usb_hub/hub.py` uses.
-3.  `tools/mass_storage/cli.py` + `mass_storage.py` — standalone CLI mirroring
-    `tools/usb_hub/cli.py`. This is where the eject is verified to trip
-    `storage_mount_changed_cb` on real hardware, with the console open, before
-    any YAML exists.
-4.  `wrappers/dut_storage_wrapper.py` — mount tracking, `restore_all` cleanup,
-    per-action variable binding, `validation_expected` / `validation_actual`.
-5.  Register in `parser/parser.py` `WRAPPER_BY_TAG` and `wrappers/__init__.py`;
-    call the new `restore_all` alongside the existing one in `main.py`.
-6.  Dockerfile packages and run-flag documentation.
-7.  Extend `scenarios/tracker.yml` with the sequence in section 4; update
-    `README.md`.
+All done, with one deviation noted below.
+
+1.  **`tools/mass_storage/device.py`** — port-anchored sysfs discovery.
+    `find_block_device(hub_location, port, settle_timeout_s)` returns the
+    partition node, falling back to the whole disk for a superfloppy after a
+    short grace period. Refuses rather than guesses when a port presents more
+    than one disk. Tested against a fake sysfs tree in
+    `tests/test_mass_storage_device.py`.
+2.  **`tools/mass_storage/mount.py`** — `mount` / `unmount` / `eject`, with
+    the error classes `tools/usb_hub/hub.py` uses.
+
+    *Deviation from section 3.2:* `mount` passes no `-t`, letting the kernel
+    identify the filesystem, rather than forcing `vfat`. This removes section
+    7's filesystem question entirely — an exFAT card mounts the same way — and
+    forcing a type would have failed with a far less obvious message than
+    letting detection do its job.
+3.  **`tools/mass_storage/files.py`** (not in the original plan) — `list`,
+    `read`, `copy_from` and `delete`, each resolving its card-relative path
+    and then checking it is still inside the mount. Split out of the wrapper
+    so the CLI can use it too. Tested in `tests/test_mass_storage_files.py`.
+
+    `delete` was added after the design was written, for clearing the card
+    between runs. It needs the mount to be `rw`, refuses the card root, and
+    treats matching nothing as a success — clearing has to be idempotent, or
+    the same scenario fails on its second run precisely because the first one
+    worked. The containment check is load-bearing here rather than
+    precautionary: `Path.glob("../*")` really does escape the mountpoint.
+4.  **`tools/mass_storage/cli.py`** + `mass_storage.py` — standalone CLI
+    mirroring `tools/usb_hub/cli.py`. The file commands deliberately refuse to
+    mount on demand: mounting is a step the DUT observes, so it stays
+    something a caller asks for.
+5.  **`wrappers/dut_storage_wrapper.py`** — mount tracking, `restore_all`
+    cleanup with a lazy-unmount fallback, per-action variable binding.
+    `eject` refuses while the card is still mounted. Tested in
+    `tests/test_dut_storage_wrapper.py`.
+6.  **Registered** in `parser/parser.py` and `wrappers/__init__.py`;
+    `dut_storage_restore_all()` runs in `main.py`'s `finally` *before*
+    `usb_switch_restore_all`, so the unmount happens while the card's device
+    still exists.
+7.  **Dockerfile** gained `sg3-utils` and `dosfstools`; README documents
+    `--privileged -v /dev:/dev`, the `!DutStorage` tag, and the firmware
+    behaviour above.
 
 ## 7. Open questions
 
 *   **Throughput.** Full-speed USB caps around 1 MB/s, so a whole-card
     `copy_from` is slow. Scenario copies should stay scoped to a
     subdirectory, and `copy_from` needs a generous timeout of its own.
-*   **Filesystem.** `CONFIG_TINYUSB_FAT_FORMAT_ANY=y` and the card is expected
-    to be FAT32. Worth confirming with `lsblk -o NAME,FSTYPE,LABEL` on a
-    powered port before step 1, since an exFAT card needs `exfatprogs` in the
-    image.
-*   **`copy_to`.** Deliberately not in this design. Writing to the DUT's card
-    is a different risk profile and can be added once reading is trusted.
+*   **Filesystem.** Resolved: `mount` autodetects, so FAT32 and exFAT are
+    both fine. An exFAT card would still need `exfatprogs` in the image;
+    `mass_storage.py ... discover` prints the detected type.
+*   **Hardware verification.** Partly done: a run on 2026-08-18 got through
+    discovery, mount, list and unmount against a real tracker. The eject step
+    has still not been reached, so the firmware hand-off - the reason for
+    mounting rather than reading raw blocks - remains unverified.
+
+    Older note, still outstanding for the eject: The first thing to check is that
+    `mass_storage.py -l <hub> -p <port> eject` makes the firmware log
+    `TinyUSB: Storage control returned to ESP32`, with the DUT console open.
+    Everything else in the sequence is ordinary filesystem access; that one
+    step is the whole reason for mounting rather than reading raw blocks.
+*   **`copy_to`.** Still not implemented. `delete` is now the one action
+    that changes the card; writing files *onto* it can be added the same way
+    (`mode: rw`, containment-checked path) once there is a scenario needing
+    it.
