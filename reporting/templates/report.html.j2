@@ -59,7 +59,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  .shell { max-width: 1180px; margin: 0 auto; padding: var(--s5) var(--s4) var(--s7); }
+  .shell { max-width: 1300px; margin: 0 auto; padding: var(--s5) var(--s4) var(--s7); }
 
   code, .mono { font-family: var(--font-mono); font-variant-ligatures: none; }
   .num { font-variant-numeric: tabular-nums; }
@@ -224,6 +224,13 @@
 
   details > summary { cursor: pointer; }
   details > summary::marker { color: var(--ink-soft); }
+
+  /* A tag is one identifier: breaking `!ProgramEsptool` across two lines to
+     save a few pixels costs more scanning than the width it wins back, so the
+     Tag column is sized to hold the longest tag whole. `code` sets
+     word-break: break-word for payloads and expressions, which is right there
+     and wrong here. */
+  td details > summary code { white-space: nowrap; }
 
   pre {
     margin: var(--s2) 0 0;
