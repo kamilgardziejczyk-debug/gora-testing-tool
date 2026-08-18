@@ -380,7 +380,7 @@ The tool is executed using `main.py`. You specify the path to a scenario YAML fi
 Every run writes an HTML report once it finishes, whether every command passed or a command failed and stopped the scenario early — the report always reflects whatever actually ran. It contains:
 *   A masthead with the scenario file name, when the run started, the elapsed time, the number of checks, and links to the log files below.
 *   A pass tally — `passed / total` with a progress meter, coloured green when the run is clean and red when anything failed.
-*   One row per executed command: its `name`, its tag (click to expand its exact YAML source), the `validation` expression it was checked against and what was actually observed (blank for commands with no assertion of their own, e.g. anything other than `!MqttExpect`), how long it took, and a PASS/FAIL chip (with the error message, if it failed). Failed rows are tinted so they stand out when scanning.
+*   One row per executed command: its `name`, its tag (click to expand its exact YAML source), the `validation` expression it was checked against and what was actually observed (blank for commands with no assertion of their own, such as `!RelayControl` or `!UsbSwitch`), how long it took, and a PASS/FAIL chip (with the error message, if it failed). Failed rows are tinted so they stand out when scanning.
 *   The total wall-clock time for the run, under the table.
 
 The report is a single self-contained file with no external assets, and follows the light/dark preference of whatever opens it.
@@ -448,6 +448,54 @@ python main.py -t scenarios/jlink_test.yml -f /path/to/my/nxp/firmware
 ## 3. Supported Scenario Tags
 
 You can design custom test scenarios under `scenarios/` using the following YAML tags:
+
+### Validation expressions
+
+Every tag that asserts something — `!DutLogExpect`, `!DutCli`, `!MqttExpect`, and `!BleCentral`'s `read`/`notify` — states its condition in a `validation` field, written as a **Python expression**. The values the tag measured are named in braces:
+
+```yaml
+validation: "{count} == 192"
+validation: 'matches({line}, r"unix=[0-9]+")'
+validation: "len({files}) == 24 and 'BOOT.CFG' not in {files}"
+```
+
+Braces are what make a scenario readable at a glance: `{count}` is plainly the thing the tag measured, where a bare `count` could be anything. They also make a typo fail **when the scenario loads**, before any hardware is touched — every bare name is rejected, so both `{cont}` and `count` are caught while the file is being read rather than at the moment the DUT is finally in the right state to be checked.
+
+Which variables exist depends on the tag, and each tag's section below lists its own. What every expression may use:
+
+*   **Operators**: `==`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not in`, `and`, `or`, `not`, and arithmetic.
+*   **Functions**: `len`, `any`, `all`, `sorted`, `sum`, `min`, `max`, `abs`, `int`, `str`, `float`, `bool`, `set`, and `matches(text, pattern)`.
+*   **String methods**: `.startswith()`, `.endswith()`, `.lower()`, `.upper()`, `.strip()`, `.lstrip()`, `.rstrip()`, `.split()`, `.replace()`, `.find()`, `.count()`.
+*   **List literals and comprehensions**: `{count} in [1, 2, 3]`, `any(f.endswith(".log") for f in {files})`.
+
+Anything else — an import, a lambda, an assignment, an attribute outside that method list — is rejected when the scenario loads, naming what was disallowed. This is a guard against typos and accidents, not a security boundary: `!ExecuteCommand` already runs arbitrary shell, so it makes no attempt to contain a scenario author who means harm.
+
+#### Regular expressions
+
+`matches(text, pattern)` is `re.search`: true when `pattern` is found anywhere in `text`. It is how the two log-matching tags express what used to be a bare pattern.
+
+Quoting needs care, because three languages stack up in one line. The house pattern is **single-quoted YAML on the outside, a raw Python string on the inside**:
+
+```yaml
+validation: 'matches({line}, r"Wall clock set from \S+: unix=[0-9]+")'
+```
+
+*   **Single-quoted YAML outside.** A backslash in a double-quoted YAML scalar (`"...\S+..."`) is a YAML *scanner error*. Single-quoted YAML passes backslashes through untouched.
+*   **A raw Python string inside.** `"\S+"` is a deprecated escape in Python and an error in future versions; `r"\S+"` delivers the backslash to the regex intact. A pattern written without the `r` is rejected when the scenario loads, with a message saying so.
+*   **Braces inside a string are left alone.** `r"\d{2,4}"` is an ordinary quantifier, not a variable — substitution runs over Python tokens, so only a `{name}` outside a string literal is treated as one.
+
+#### Migrating from the older syntax
+
+`validation` used to mean four different things depending on the tag: a bare regex for `!DutLogExpect` and `!DutCli`, `count <op> <n>` for `!MqttExpect`, and `value <op> <literal>` for `!BleCentral`. A scenario still using any of those is **rejected when it loads**, with a message naming the replacement — it is never silently misread.
+
+| Tag | Was | Now |
+| --- | --- | --- |
+| `!DutLogExpect` | `'Wall clock set from \S+'` | `'matches({line}, r"Wall clock set from \S+")'` |
+| `!DutCli` | `'Journal cleared'` | `'matches({reply}, "Journal cleared")'` |
+| `!MqttExpect` | `"count == 192"` | `"{count} == 192"` |
+| `!BleCentral` | `"value == 01"` | `'{value} == "01"'` |
+
+`!BleCentral` is the one change that is more than syntax: `read` and `notify` no longer take an `encoding` field, because the expression now names which reading of the bytes it means (`{value}`, `{text}`, `{number}`, `{size}`). `encoding` remains on `write`, where it still decides how the literal being written is encoded.
 
 ### `!ProgramJlink`
 Programs a microcontroller using SEGGER J-Link Commander (`JLinkExe`/`JLink.exe`).
@@ -582,12 +630,12 @@ Self-contained like `!SubghzSim`: the connection lives for this command only, so
         *   `attempts`: Must be `1` (or omitted) — writes cannot be retried safely. Retrying a *read* is idempotent; retrying a *write* is not (e.g. a reset-trigger characteristic could fire twice if the first write's acknowledgement times out). Setting `attempts > 1` on a write fails while parsing the file. Use `read`/`notify` where a retry is needed.
     *   `read`: Read a characteristic, optionally asserting on its value.
         *   `uuid`: (Required) Characteristic UUID to read.
-        *   `validation`: (Optional) A `"value <op> <literal>"` expression — see below. Omit to just read and log the value without asserting anything about it.
-        *   `encoding`, `service`, `wait_after_ms`: (Optional) Same as `write`.
+        *   `validation`: (Optional) An expression over the value read — see below. Omit to just read and log the value without asserting anything about it.
+        *   `service`, `wait_after_ms`: (Optional) Same as `write`.
     *   `notify`: Wait for a `validation` expression to be satisfied by a **pushed** notification. Ignores values that don't satisfy it and keeps waiting, rather than failing on the first mismatch — a device reporting an intermediate state (e.g. "booting") before the expected one is normal. A real push notification can be missed in a narrow window right after reconnecting (e.g. following a device reset); `read` with `attempts` (below) is the reliable alternative for that case.
         *   `uuid`: (Required) Characteristic UUID to subscribe to.
         *   `validation`: (Required) See below.
-        *   `encoding`, `service`, `wait_after_ms`: (Optional) Same as `write`.
+        *   `service`, `wait_after_ms`: (Optional) Same as `write`.
         *   `timeout_s`: (Optional) Seconds to wait before failing the command. Defaults to `30`.
     *   `attempts`: (Optional, `read`/`notify` only) Retries this one action, on the same connection, up to this many times before giving up. Defaults to `1` (no retry). The general way to poll: a `read` with `validation` fails whenever the value doesn't satisfy it yet, so giving it `attempts` repeats the read until it does — replacing what would otherwise need a hand-written retry loop. If a failed attempt finds the link itself has dropped, the next attempt reconnects first rather than retrying against a dead connection; if that reconnect also fails, the command fails immediately instead of exhausting the remaining attempts.
     *   `retry_wait_ms`: (Optional, any verb) Pause between a failed attempt and the next one. Defaults to `1000`. Distinct from `wait_after_ms`, which only applies once the action has succeeded.
@@ -595,7 +643,18 @@ Self-contained like `!SubghzSim`: the connection lives for this command only, so
 *   `scan_timeout_s`: (Optional) Seconds to scan when resolving `device` by name. Defaults to `8`. Raise this on a command that reconnects right after a device reboot, since it needs time to start advertising again before a scan will find it.
 *   `connect_timeout_s`: (Optional) Seconds to wait for the connection itself. Defaults to `15`.
 
-`read` and `notify`'s `validation` is a `"value <op> <literal>"` expression, where `<op>` is `==` or `!=` and `<literal>` is interpreted per `encoding`. Examples: `"value == 01"`, `"value != 00"`. Unlike `!MqttExpect`'s count, ordering operators (`>=`, `<=`, `>`, `<`) aren't supported — a GATT payload has no general ordering once encodings other than a fixed-width integer are allowed.
+`read` and `notify` take a [validation expression](#validation-expressions) over the characteristic's value, offered in four readings:
+
+| Variable | Type | Holds |
+| --- | --- | --- |
+| `{value}` | `str` | the bytes as lowercase hex, e.g. `"01ff"` |
+| `{text}` | `str` | the bytes decoded as UTF-8, undecodable bytes replaced |
+| `{number}` | `int` | the bytes as a little-endian unsigned integer |
+| `{size}` | `int` | how many bytes arrived |
+
+Examples: `'{value} == "01"'`, `'{value} != "00"'`, `"{number} >= 10"`, `'{text}.startswith("OK")'`, `"{size} == 4"`.
+
+Which reading is meaningful belongs to the characteristic, so the expression names it directly rather than an `encoding` field deciding how a literal is interpreted — `"{number} == 1"` where a scenario used to say `encoding: uint8` plus `value == 1`. Little-endian, matching the Bluetooth spec's own numeric fields. `encoding` still applies to `write`, which has a literal to encode.
 
 ```yaml
   - !BleCentral:
@@ -621,12 +680,12 @@ Self-contained like `!SubghzSim`: the connection lives for this command only, so
     actions:
       - read:
           uuid: "0000ffe3-0000-1000-8000-00805f9b34fb"
-          validation: "value == 01"
+          validation: '{value} == "01"'
           attempts: 15
           retry_wait_ms: 2000
 ```
 
-A bad UUID, an unknown encoding, a malformed `validation` expression, or a value that doesn't fit it **fails while parsing the file**, before the radio is touched — so a malformed scenario cannot leave a device half-configured. A missing device, a service or characteristic the peripheral doesn't expose, a rejected write, or a `read`/`notify` assertion that isn't satisfied fails when the command runs — after exhausting `attempts`, if given one greater than `1`.
+A bad UUID, an unknown encoding on a `write`, or a malformed `validation` expression **fails while parsing the file**, before the radio is touched — so a malformed scenario cannot leave a device half-configured. A missing device, a service or characteristic the peripheral doesn't expose, a rejected write, or a `read`/`notify` assertion that isn't satisfied fails when the command runs — after exhausting `attempts`, if given one greater than `1`.
 
 > Note: only the central role exists. A peripheral role (this host advertising its own GATT server) is not implemented yet.
 
@@ -649,18 +708,28 @@ Non-blocking: it returns as soon as the broker confirms every subscription, then
 Everything the session receives goes to the run's [`mqtt.log` and `combined.log`](#log-files) as it arrives, whether or not a later `!MqttExpect` counts it.
 
 ### `!MqttExpect`
-Asserts a message-count expression against one `topic` filter within a `!MqttSubscribe` session, e.g. `validation: "count == 2"`. Place it **after** the command that triggers the device, so the assertion covers what that action actually produced.
+Asserts a message-count expression against one `topic` filter within a `!MqttSubscribe` session, e.g. `validation: "{count} == 2"`. Place it **after** the command that triggers the device, so the assertion covers what that action actually produced.
 
 Since a session can carry more than one topic, this only counts messages whose topic matches `topic` — matched the same way a broker matches a subscription filter against a concrete topic, so `topic` can itself use `+`/`#` wildcards. Anything read off the session that doesn't match is put back for a later command to see, so a second `!MqttExpect` on a different topic within the same session still sees its own traffic.
 
-MQTT delivery has no "no more messages coming" signal, so this generally waits out the full `timeout_s` window rather than stopping as soon as the count looks right — a straggler arriving just after would otherwise go unnoticed. The exception is when the running count already makes the final verdict certain before the window ends (e.g. `count == 2` can no longer pass once a 3rd message has arrived, and `count >= 2` can no longer fail once the 2nd has); in that case it stops waiting immediately instead of running out the clock.
+MQTT delivery has no "no more messages coming" signal, so this generally waits out the full `timeout_s` window rather than stopping as soon as the count looks right — a straggler arriving just after would otherwise go unnoticed. The exception is when the running count already makes the final verdict certain before the window ends (e.g. `{count} == 2` can no longer pass once a 3rd message has arrived, and `{count} >= 2` can no longer fail once the 2nd has); in that case it stops waiting immediately instead of running out the clock.
+
+That shortcut only applies to a validation that is exactly `{count} <op> <n>`. A richer expression — one touching `{payloads}`, or combining conditions — cannot be reasoned about that way and always waits out the full `timeout_s`. Worth knowing before putting one on a check with a long window: it costs the whole window on failure rather than stopping early.
 
 Does not close the session, so a scenario can `!MqttExpect` more than once against the same session — for example, once per topic. The runner closes any session still open once the scenario ends, including after a failure.
 *   `name`: (Optional) Descriptive log name.
 *   `session`: (Required) Session name given to `!MqttSubscribe`.
 *   `topic`: (Required) Which topic filter (out of the session's `topics`) to count messages on.
 *   `count_by`: (Optional) A field name in the payload. Counts *distinct values of that field* instead of messages — see below. Omit it to count messages, as before.
-*   `validation`: (Required) A `"count <op> <n>"` expression, where `<op>` is one of `==`, `!=`, `>=`, `<=`, `>`, `<` and `<n>` is a non-negative integer. Examples: `"count == 2"`, `"count >= 1"`, `"count < 5"`.
+*   `validation`: (Required) A [validation expression](#validation-expressions) over what arrived:
+
+    | Variable | Type | Holds |
+    | --- | --- | --- |
+    | `{count}` | `int` | messages matched, or distinct `count_by` values when that is set |
+    | `{payloads}` | `list[str]` | the matched messages' payloads, in arrival order |
+    | `{values}` | `list` | the distinct `count_by` values seen, or `[]` |
+
+    Examples: `"{count} == 2"`, `"{count} >= 1"`, `'any("error" in p for p in {payloads})'`.
 *   `timeout_s`: (Optional) Seconds to wait for messages to arrive. Defaults to `10`.
 
 #### Counting samples instead of messages (`count_by`)
@@ -673,7 +742,7 @@ A device that batches makes the message count meaningless. The gateway's journal
     session: "iot"
     topic: "gora/gateway-01/journal"
     count_by: "seq"          # count distinct 'seq' values, not messages
-    validation: "count == 192"
+    validation: "{count} == 192"
     timeout_s: 150           # must clear a whole 120s upload period
 ```
 
@@ -699,24 +768,34 @@ Needs a DUT console to be captured (`--dut-log`, or a `dut_log` block). A scenar
 ```yaml
   - !DutLogExpect:
     name: "Wall Clock Set From NTP"
-    validation: 'Wall clock set from \S+: unix=[0-9]+'
+    validation: 'matches({line}, r"Wall clock set from \S+: unix=[0-9]+")'
     timeout_s: 60
 ```
 
 *   `name`: (Optional) Descriptive log name.
-*   `validation`: (Required) A Python regular expression, *searched* against each captured line (it need not match the whole line).
+*   `validation`: (Required) A [validation expression](#validation-expressions), evaluated once per captured line against:
+
+    | Variable | Type | Holds |
+    | --- | --- | --- |
+    | `{line}` | `str` | the line that just arrived |
+    | `{log}` | `str` | every line considered so far, newline-separated |
+    | `{lines}` | `list[str]` | the same, as a list |
+
+    `{line}` is the one to reach for — the check passes as soon as any single line satisfies the expression, which is what "the DUT said this" means. `{log}` and `{lines}` are for a condition spanning several lines, e.g. `"len({lines}) > 5 and matches({log}, r'done')"`.
 *   `since`: (Optional) How much of the capture to search. `scenario` (default) searches the whole run, including output from before this command. `command` searches only from this command onwards.
 *   `timeout_s`: (Optional) Seconds to wait for a matching line. Defaults to `30`.
 
 Three things to know:
 
-*   **Use single quotes around the validation.** A regex in double quotes (`"...\S+..."`) is a YAML *scanner error*, because YAML treats `\S` as an invalid escape — unlike every other field in these scenarios, which are conventionally double-quoted. Single-quoted YAML passes backslashes through untouched, so `'\S+'` and `'\d{4}'` work as written.
+*   **Quote it single-outside, raw-inside**: `'matches({line}, r"\S+")'`. See [Regular expressions](#regular-expressions) for why each layer is needed.
 *   **It searches output captured before it runs**, so it can be placed anywhere after the action that provokes the line. A DUT does not wait to be asked: the gateway sets its clock about 16 s into boot, which on a scenario that resets it early is several commands before anything reads for it. This is why the default `since` is `scenario` — a wait-only check would sit out its whole timeout while the line it wanted was already captured. Use `since: command` when a match from *before* an action would be a false pass, such as re-checking a sync after a deliberate reset.
 *   **A retry is not a failure.** Assert that a line eventually appears; don't try to assert a warning never did. The gateway's first NTP query routinely fails with `-11` (`EAGAIN` — DNS isn't usable in the instant after DHCP) and the next attempt succeeds, so a "no NTP errors" check would fail every healthy run. Bound how long a retry may take with `timeout_s` instead.
 
+    The expression syntax now lets you *write* that mistake, so it is worth stating plainly: this tag waits for its expression to become **true**, so a negative one — `'not matches({log}, r"PANIC")'` — is already true before the DUT has said anything and passes instantly, testing nothing. Assert what the DUT must say, not what it must not.
+
 A failed match **fails the scenario**, logging how many lines were examined and the last 15 the DUT emitted, so the report shows what it *was* saying. If lines have been evicted from the in-memory buffer (over 5000 captured), the failure says so rather than implying the DUT definitely never emitted the line — `device.log` remains complete either way.
 
-Matching is against the line **as the firmware emitted it**; the `[HH:MM:SS.mmm]` prefix in the log files is added by this tool and is not part of what the regex sees. A timestamp the firmware prints itself — such as the gateway's own `[2026-08-04T06:25:01,707000Z]` — *is* matchable, which makes `validation: '^\[19[0-9]{2}-'` a way to spot a device still running on an unsynced 1970 clock.
+Matching is against the line **as the firmware emitted it**; the `[HH:MM:SS.mmm]` prefix in the log files is added by this tool and is not part of what the expression sees. A timestamp the firmware prints itself — such as the gateway's own `[2026-08-04T06:25:01,707000Z]` — *is* matchable, which makes `validation: 'matches({line}, r"^\[19[0-9]{2}-")'` a way to spot a device still running on an unsynced 1970 clock.
 
 ### `!DutLogControl`
 Stops and starts the run's DUT console capture, for the board whose console **is** its programming port. An ESP32 behind a USB-UART bridge logs on `/dev/ttyUSB0` and is flashed on `/dev/ttyUSB0`, and both cannot read it at once: the kernel gives each byte to whichever reader asks first, so a capture left running through a flash quietly eats parts of esptool's handshake and the flash fails in ways that look random. Bracket the flash to hand the port over explicitly:
@@ -770,22 +849,29 @@ Needs a shell UART to be configured (`--dut-cli`, or a `dut_cli` block). A scena
   - !DutCli:
     name: "Gateway Reports Itself Online"
     command: "gora status"
-    validation: 'state:\s*connected'
+    validation: 'matches({reply}, r"state:\s*connected")'
     timeout_s: 5
 ```
 
 *   `name`: (Optional) Descriptive log name.
 *   `command`: (Required) The line typed at the shell, e.g. `"gora status"`.
-*   `validation`: (Optional) A Python regular expression, *searched* against the reply (it need not match the whole reply, and may span lines with an explicit `\n`). Omit it to run a command for its effect and just log what came back.
+*   `validation`: (Optional) A [validation expression](#validation-expressions) over the reply. Omit it to run a command for its effect and just log what came back.
+
+    | Variable | Type | Holds |
+    | --- | --- | --- |
+    | `{reply}` | `str` | the whole reply, newline-separated |
+    | `{lines}` | `list[str]` | the reply split into lines, without line endings |
+
+    A reply is not a device log: output the DUT volunteered while the command ran is captured separately and is never part of `{reply}`. Assert on that with `!DutLogExpect` instead.
 *   `timeout_s`: (Optional) Seconds to wait for the DUT's reply. Defaults to `3`. Raise it for a command the device takes real time over (clearing a journal, a flash erase) — the command is sent once and this is how long its answer is waited for, never a budget for re-sending it.
 
 Five things to know:
 
-*   **Use single quotes around the validation**, for the same YAML reason as `!DutLogExpect`: `"...\s..."` is a scanner error, `'...\s...'` passes the backslash through untouched.
+*   **Quote it single-outside, raw-inside**, for the same reasons as `!DutLogExpect`: `'matches({reply}, r"\s")'`. See [Regular expressions](#regular-expressions).
 *   **The reply is framed from the command's own echo**, and ends at the following prompt. Requiring the echo is what makes `timeout_s` mean anything: a prompt the DUT had already sent — it was sitting at one before the port was opened, or the shell's sync answer arrived as two — lands just after the command goes out and would otherwise be read as that command's terminator, returning an empty reply in ~0s with the timeout never spent. This assumes the firmware echoes, i.e. Zephyr's default `CONFIG_SHELL_ECHO=y`; with echo disabled every command fails with "the DUT never echoed ...". The port is also drained to silence before each command, so a reply always starts from an empty wire.
 *   **The reply is matched, not the DUT's log output.** Zephyr's logging backend usually shares the shell UART, so `<inf>` lines can land in the middle of a response; they are separated out and never matched against (a failure quotes them separately, since they often explain the reply). The command's own echo and the trailing prompt are stripped too, so a pattern is written against what the command actually printed.
 *   **One shell serves the whole run.** It is opened by the first `!DutCli` — not at start-up, so a scenario may flash the DUT first — and closed when the run ends. If the port has gone when a command is sent (a DUT that reset since the last one), it is reopened once and the command retried.
-*   **A command the shell refuses fails the scenario** regardless of `validation` — `command not found`, `wrong parameter count` and friends mean the scenario is written against a firmware that does not have this command, which no pattern could sensibly assert against. A command that *ran* and returned news the test dislikes is an ordinary `validation` failure instead.
+*   **A command the shell refuses fails the scenario** regardless of `validation` — `command not found`, `wrong parameter count` and friends mean the scenario is written against a firmware that does not have this command, which no expression could sensibly assert against. A command that *ran* and returned news the test dislikes is an ordinary `validation` failure instead.
 
 A failed match **fails the scenario**, quoting the reply and any log output that arrived while the command ran. A reply that never comes fails differently, and says which half broke: "the DUT never echoed *x*" (it may not have received the command at all) versus "*x* was echoed but no prompt followed" (it is still working on it), the latter quoting however much of the reply did arrive.
 

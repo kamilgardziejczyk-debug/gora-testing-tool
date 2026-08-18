@@ -63,7 +63,7 @@ commands:
   - !DutCli:
     name: "Gateway Reports Itself Online"
     command: "journal clear"
-    validation: 'Journal cleared'
+    validation: 'matches({reply}, "Journal cleared")'
     timeout_s: 360
 
   - !RelayControl
@@ -120,20 +120,20 @@ commands:
     actions:
       - read:
           uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f15"
-          validation: "value == 01"
+          validation: '{value} == "01"'
           attempts: 15
           retry_wait_ms: 2000
 
   - !DutLogExpect:
     name: "Wall Clock Set From NTP"
-    validation: 'Wall clock set from \S+: unix=[0-9]+'
+    validation: 'matches({line}, r"Wall clock set from \S+: unix=[0-9]+")'
     timeout_s: 60
 
   - !MqttExpect:
     name: "Collect Device Shadow Messages"
     session: "iot"
     topic: "$aws/things/gateway-01/shadow/update"
-    validation: "count == 1"
+    validation: "{count} == 1"
     timeout_s: 15
 
   - !SubghzSim:
@@ -156,7 +156,7 @@ commands:
     session: "iot"
     topic: "gora/gateway-01/journal"
     count_by: "seq"
-    validation: "count == 192"
+    validation: "{count} == 192"
     timeout_s: 150
 
   - !MqttDisconnect:

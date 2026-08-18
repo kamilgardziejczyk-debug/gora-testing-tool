@@ -33,7 +33,17 @@ dut_log:
   port: "/dev/ttyUSB0"
   baud: 115200
 
+usb_hub:
+  ports:
+    dut_storage: 1
+
+
 commands:
+  - !UsbSwitch
+    name: "Disconnect storage USB"
+    port: dut_storage
+    state: 0
+    wait_after_s: 1
 
   - !RelayControl
     name: "Turn on the device"
@@ -51,12 +61,18 @@ commands:
     partition_table: "partition-table.bin"
     firmware: "tekpadz.bin"
     port: "/dev/ttyUSB0"
-    timeout_s: 180
+    timeout_s: 20
 
   - !DutLogControl
     name: "Capture The Console Again"
     state: 1
     wait_after_s: 120
+
+  - !UsbSwitch
+    name: "Disconnect storage USB"
+    port: dut_storage
+    state: 1
+    wait_after_s: 10
 
   - !RelayControl
     name: "Turn off the device"

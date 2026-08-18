@@ -1,5 +1,4 @@
 import logging
-import operator as operator_module
 import time
 from typing import Callable, NamedTuple, Union
 
@@ -15,6 +14,7 @@ from tools.ble_gatt import (
     normalize_uuid,
 )
 
+from .expression import Expression, compile_expression
 from .wrapper import Wrapper
 
 
@@ -31,16 +31,30 @@ DEFAULT_RETRY_WAIT_MS = 1000
 # pause after this action *succeeds*, before the next one in `actions:` runs.
 ACTION_VERBS = ("write", "read", "notify")
 
-# Only equality is meaningful in general: unlike !MqttExpect's count, a GATT
-# payload has no ordering once encodings other than a fixed-width integer are
-# allowed, so >=/<=/>/< would mean something different depending on `encoding`
-# (or nothing at all for hex/utf8). Kept as a comparison table anyway, matching
-# !MqttExpect's 'validation' pattern, so it reads the same way. Shared by the
-# `read` and `notify` actions, which both use "value <op> <literal>".
-VALUE_COMPARISONS = {
-    "==": operator_module.eq,
-    "!=": operator_module.ne,
-}
+# Variables a read/notify `validation` expression may use. A characteristic
+# is raw bytes, and which reading of them is meaningful is a property of the
+# characteristic, not of the test framework - so rather than an `encoding`
+# field deciding how a literal is interpreted, all four readings are offered
+# and the expression picks the one it means.
+VALUE_VARIABLES = ("value", "text", "number", "size")
+
+# Shown when a scenario still carries the pre-expression `value == 01` syntax.
+MIGRATION_HINT = "The value is now written {value} as a hex string, e.g. '{value} == \"01\"'."
+
+
+def _value_variables(data: bytes) -> dict[str, object]:
+    """Bind one characteristic value's four readings for a validation.
+
+    `text` decodes with replacement rather than raising: a characteristic that
+    is not UTF-8 is a perfectly ordinary thing to point a `{value}` assertion
+    at, and it must not make the whole expression unevaluatable.
+    """
+    return {
+        "value": data.hex(),
+        "text": data.decode("utf-8", errors="replace"),
+        "number": int.from_bytes(data, "little"),
+        "size": len(data),
+    }
 
 
 class WriteAction(NamedTuple):
@@ -64,16 +78,14 @@ class WriteAction(NamedTuple):
 class ReadAction(NamedTuple):
     """One characteristic read, with an optional `validation` to check it against.
 
-    `operator` is None when there is no `validation` field: the read still
+    `expression` is None when there is no `validation` field: the read still
     happens (and is logged), but nothing is asserted about its value - in
     which case `attempts` > 1 would just retry a read that always "succeeds".
     """
 
     uuid: str
-    operator: str | None
-    expected_value: bytes | None
-    raw_value: str | None
-    encoding: str
+    validation: str | None
+    expression: Expression | None
     service_uuid: str | None
     wait_after_ms: int | None
     attempts: int
@@ -81,16 +93,11 @@ class ReadAction(NamedTuple):
 
 
 class NotifyAction(NamedTuple):
-    """A wait for a `validation` expression to be satisfied by a pushed notification.
-
-    `raw_value` and `encoding` are kept only for logging, matching the other actions.
-    """
+    """A wait for a `validation` expression to be satisfied by a pushed notification."""
 
     uuid: str
-    operator: str
-    expected_value: bytes
-    raw_value: str
-    encoding: str
+    validation: str
+    expression: Expression
     service_uuid: str | None
     timeout_s: float
     wait_after_ms: int | None
@@ -139,6 +146,22 @@ class BleCentralWrapper(Wrapper):
     it the right tool for waiting on something *after* a device reset that
     drops the BLE link: reconnecting is a fresh !BleCentral command rather
     than something the wrapper that triggered the reset stays open for.
+
+    The `read` and `notify` actions take a `validation` expression over the
+    characteristic's value, read four ways:
+
+        {value}   str   the bytes as lowercase hex, e.g. "01ff"
+        {text}    str   the bytes decoded as UTF-8, undecodable bytes replaced
+        {number}  int   the bytes as a little-endian unsigned integer
+        {size}    int   how many bytes arrived
+
+    `read` without a `validation` performs the read and logs it, asserting
+    nothing. `notify` requires one, since the value it is waiting for is the
+    only thing that ends the wait.
+
+    Unlike `write`, these take no `encoding` field: which reading of the bytes
+    is meaningful belongs to the characteristic, so the expression names it
+    directly (`{number} == 1` rather than `encoding: uint8` plus `value == 1`).
     """
 
     def __init__(self, command_node: yaml.MappingNode):
@@ -303,35 +326,28 @@ class BleCentralWrapper(Wrapper):
         fields = _extract_fields(node, {
             "uuid": (str, None),
             "validation": (str, None),
-            "encoding": (str, DEFAULT_ENCODING),
             "service": (str, None),
             "wait_after_ms": (int, None),
             "attempts": (int, None),
             "retry_wait_ms": (int, None),
         })
 
-        uuid, encoding = fields["uuid"], fields["encoding"]
+        uuid = fields["uuid"]
         if uuid is None:
             raise ValueError(f"BleCentral: {label} is missing its 'uuid' field")
 
-        operator = None
-        expected = None
-        raw_value = None
-        if fields["validation"] is not None:
-            operator, literal = self._parse_value_validation(label, fields["validation"])
-            try:
-                expected = encode_value(literal, encoding)
-            except ValueError as error:
-                raise ValueError(f"BleCentral: {label} ({uuid}) has an invalid value: {error}") from None
-            raw_value = literal
+        validation = fields["validation"]
+        expression = None
+        if validation is not None:
+            expression = compile_expression(
+                validation, VALUE_VARIABLES, f"BleCentral: {label} ({uuid}) 'validation'", MIGRATION_HINT
+            )
 
         attempts, retry_wait_ms = self._parse_retry_fields(label, fields["attempts"], fields["retry_wait_ms"])
         return ReadAction(
             uuid=self._normalize(f"{label} uuid", uuid),
-            operator=operator,
-            expected_value=expected,
-            raw_value=raw_value,
-            encoding=encoding,
+            validation=validation,
+            expression=expression,
             service_uuid=self._resolve_service(label, fields["service"]),
             wait_after_ms=fields["wait_after_ms"],
             attempts=attempts,
@@ -342,7 +358,6 @@ class BleCentralWrapper(Wrapper):
         fields = _extract_fields(node, {
             "uuid": (str, None),
             "validation": (str, None),
-            "encoding": (str, DEFAULT_ENCODING),
             "service": (str, None),
             "timeout_s": (float, DEFAULT_NOTIFY_TIMEOUT_S),
             "wait_after_ms": (int, None),
@@ -350,7 +365,7 @@ class BleCentralWrapper(Wrapper):
             "retry_wait_ms": (int, None),
         })
 
-        uuid, validation, encoding, timeout_s = fields["uuid"], fields["validation"], fields["encoding"], fields["timeout_s"]
+        uuid, validation, timeout_s = fields["uuid"], fields["validation"], fields["timeout_s"]
         if uuid is None:
             raise ValueError(f"BleCentral: {label} is missing its 'uuid' field")
         if validation is None:
@@ -358,48 +373,21 @@ class BleCentralWrapper(Wrapper):
         if timeout_s <= 0:
             raise ValueError(f"BleCentral: {label} ({uuid}) timeout_s must be > 0, got {timeout_s}")
 
-        operator, literal = self._parse_value_validation(label, validation)
-        try:
-            encoded = encode_value(literal, encoding)
-        except ValueError as error:
-            raise ValueError(f"BleCentral: {label} ({uuid}) has an invalid value: {error}") from None
+        expression = compile_expression(
+            validation, VALUE_VARIABLES, f"BleCentral: {label} ({uuid}) 'validation'", MIGRATION_HINT
+        )
 
         attempts, retry_wait_ms = self._parse_retry_fields(label, fields["attempts"], fields["retry_wait_ms"])
         return NotifyAction(
             uuid=self._normalize(f"{label} uuid", uuid),
-            operator=operator,
-            expected_value=encoded,
-            raw_value=literal,
-            encoding=encoding,
+            validation=validation,
+            expression=expression,
             service_uuid=self._resolve_service(label, fields["service"]),
             timeout_s=timeout_s,
             wait_after_ms=fields["wait_after_ms"],
             attempts=attempts,
             retry_wait_ms=retry_wait_ms,
         )
-
-    def _parse_value_validation(self, label: str, validation: str) -> tuple[str, str]:
-        """Parse a `"value <op> <literal>"` expression into `(op, literal)`.
-
-        Shared by `read` and `notify`, which both check a characteristic's
-        value the same way. Split with a max of 2 splits, not a plain
-        `.split()`, so a `utf8` literal containing spaces
-        (`"value == hello world"`) stays intact as one token.
-        """
-        tokens = validation.split(None, 2)
-        if len(tokens) != 3 or tokens[0] != "value":
-            operators = ", ".join(VALUE_COMPARISONS)
-            raise ValueError(
-                f"BleCentral: {label} 'validation' must look like 'value <op> <literal>' "
-                f"(op one of {operators}), got '{validation}'"
-            )
-
-        _, op, literal = tokens
-        if op not in VALUE_COMPARISONS:
-            operators = ", ".join(VALUE_COMPARISONS)
-            raise ValueError(f"BleCentral: {label} unrecognized operator '{op}' (expected one of {operators})")
-
-        return op, literal
 
     def _normalize(self, label: str, uuid: str) -> str:
         try:
@@ -503,12 +491,12 @@ class BleCentralWrapper(Wrapper):
         data = central.read_characteristic(action.uuid, action.service_uuid)
         LOGGER.info("ble <- %s = %s", action.uuid, format_value(data))
 
-        if action.operator is not None:
-            compare = VALUE_COMPARISONS[action.operator]
-            if not compare(data, action.expected_value):
+        if action.expression is not None:
+            variables = _value_variables(data)
+            if not action.expression.evaluate(variables):
                 raise ValueError(
                     f"BleCentral: read {action.uuid} got {format_value(data)}, "
-                    f"which does not satisfy 'value {action.operator} {format_value(action.expected_value)}'"
+                    f"which does not satisfy '{action.validation}' ({action.expression.describe(variables)})"
                 )
 
         if action.wait_after_ms is not None:
@@ -516,26 +504,21 @@ class BleCentralWrapper(Wrapper):
 
     def _run_notify(self, central: BleCentral, action: NotifyAction) -> None:
         LOGGER.info(
-            "ble: waiting up to %.1fs for %s value %s %s (%s '%s')",
+            "ble: waiting up to %.1fs for %s to satisfy '%s'",
             action.timeout_s,
             action.uuid,
-            action.operator,
-            format_value(action.expected_value),
-            action.encoding,
-            action.raw_value,
+            action.validation,
         )
 
-        compare = VALUE_COMPARISONS[action.operator]
         for data in central.stream_notifications(action.uuid, action.service_uuid, action.timeout_s):
             LOGGER.info("ble <- %s = %s", action.uuid, format_value(data))
-            if compare(data, action.expected_value):
-                LOGGER.info("BleCentral: notify ('value %s %s') satisfied on %s",
-                            action.operator, format_value(action.expected_value), action.uuid)
+            if action.expression.evaluate(_value_variables(data)):
+                LOGGER.info("BleCentral: notify satisfied '%s' on %s", action.validation, action.uuid)
                 if action.wait_after_ms is not None:
                     time.sleep(action.wait_after_ms / 1000)
                 return
 
         raise TimeoutError(
-            f"BleCentral: no value satisfying 'value {action.operator} "
-            f"{format_value(action.expected_value)}' seen on {action.uuid} within {action.timeout_s}s"
+            f"BleCentral: no value satisfying '{action.validation}' seen on {action.uuid} "
+            f"within {action.timeout_s}s"
         )

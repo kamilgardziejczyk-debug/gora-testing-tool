@@ -1,11 +1,11 @@
 import json
 import logging
-import operator as operator_module
 
 import yaml
 from paho.mqtt.client import topic_matches_sub
 
 from . import mqtt_registry
+from .expression import Expression, compile_expression
 from .wrapper import Wrapper
 
 
@@ -26,15 +26,11 @@ def _abbreviate(payload: str) -> str:
     trimmed = len(payload) - MAX_QUOTED_PAYLOAD_CHARS
     return f"{payload[:MAX_QUOTED_PAYLOAD_CHARS]}... (+{trimmed} chars, in full in mqtt.log)"
 
-# Comparison functions for the operators a `validation` string may use.
-COMPARISONS = {
-    "==": operator_module.eq,
-    "!=": operator_module.ne,
-    ">=": operator_module.ge,
-    "<=": operator_module.le,
-    ">": operator_module.gt,
-    "<": operator_module.lt,
-}
+# Variables a `validation` expression may use, and what they hold.
+VARIABLES = ("count", "payloads", "values")
+
+# Shown when a scenario still carries the pre-expression `count == n` syntax.
+MIGRATION_HINT = "The count is now written {count}, e.g. '{count} == 192'."
 
 # The message count only ever grows during the wait, so for some operators the
 # final verdict is already certain before `timeout_s` elapses:
@@ -43,6 +39,10 @@ COMPARISONS = {
 #   - "!=", ">=", ">"  can only ever pass once `count` has been reached or
 #     overshot; a fail can't be confirmed early since more could still arrive.
 # Each entry is (verdict once crossed, the crossing condition).
+#
+# Only reachable for a validation that is exactly `{count} <op> <int>`; any
+# richer expression cannot be reasoned about this way and waits out the full
+# window instead. See `_early_decision`.
 EARLY_DECISION = {
     "==": (False, lambda actual, expected: actual > expected),
     "<=": (False, lambda actual, expected: actual > expected),
@@ -55,7 +55,13 @@ EARLY_DECISION = {
 
 class MqttExpectWrapper(Wrapper):
     """Asserts a `validation` expression against what arrived on one `topic`
-    filter within an !MqttSubscribe session, e.g. `validation: "count == 2"`.
+    filter within an !MqttSubscribe session, e.g. `validation: "{count} == 2"`.
+
+    The expression is evaluated against:
+
+        {count}     int        messages matched, or distinct `count_by` values
+        {payloads}  list[str]  the matched messages' payloads, in arrival order
+        {values}    list       the distinct `count_by` values seen, or []
 
     By default `count` is a count of *messages*. With `count_by` set it is
     instead the number of distinct values of that field across the messages'
@@ -91,8 +97,8 @@ class MqttExpectWrapper(Wrapper):
         self.session: str | None = None
         self.topic: str | None = None
         self.count_by: str | None = None
-        self.operator: str | None = None
-        self.expected_count: int | None = None
+        self.validation: str | None = None
+        self.expression: Expression | None = None
         self.timeout_s: float = DEFAULT_TIMEOUT_S
 
     def parse(self) -> None:
@@ -100,7 +106,6 @@ class MqttExpectWrapper(Wrapper):
         if tag_name != "MqttExpect":
             raise ValueError("Expected !MqttExpect command")
 
-        validation: str | None = None
         for key_node, value_node in self.command_node.value:
             if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
                 continue
@@ -115,53 +120,40 @@ class MqttExpectWrapper(Wrapper):
             elif key == "count_by":
                 self.count_by = value_node.value
             elif key == "validation":
-                validation = value_node.value
+                self.validation = value_node.value
             elif key == "timeout_s":
                 self.timeout_s = float(value_node.value)
-
-        if validation is not None:
-            self.operator, self.expected_count = self._parse_validation(validation)
 
         self._validate()
 
         LOGGER.info(
             "Parsed MqttExpect: name=%s, session=%s, topic=%s, count_by=%s, "
-            "validation='count %s %s', timeout_s=%s",
+            "validation='%s', timeout_s=%s",
             self.name,
             self.session,
             self.topic,
             self.count_by,
-            self.operator,
-            self.expected_count,
+            self.validation,
             self.timeout_s,
         )
 
-    def _parse_validation(self, validation: str) -> tuple:
-        """Parse a `"count <op> <n>"` expression into `(op, n)`.
+    def _early_decision(self) -> tuple[bool, object] | None:
+        """The early-exit rule for this validation, or None if it has none.
 
-        `count` is the only supported left-hand side today, kept as a literal
-        word rather than assumed, so the syntax has room to grow other
-        comparisons later without becoming ambiguous with this one.
+        Only a validation of exactly `{count} <op> <int>` can be settled
+        before the window ends, because only then does a count that has
+        already overshot make the final verdict certain. Anything richer -
+        a condition on `{payloads}`, a compound expression - has to see the
+        whole window, which is slower but never wrong.
         """
-        tokens = validation.split()
-        if len(tokens) != 3 or tokens[0] != "count":
-            operators = ", ".join(COMPARISONS)
-            raise ValueError(
-                f"MqttExpect: 'validation' must look like 'count <op> <n>' "
-                f"(op one of {operators}), got '{validation}'"
-            )
-
-        _, op, value = tokens
-        if op not in COMPARISONS:
-            operators = ", ".join(COMPARISONS)
-            raise ValueError(f"MqttExpect: unrecognized operator '{op}' (expected one of {operators})")
-
-        try:
-            expected_count = int(value)
-        except ValueError:
-            raise ValueError(f"MqttExpect: expected count must be an integer, got '{value}'") from None
-
-        return op, expected_count
+        simple = self.expression.as_simple_comparison()
+        if simple is None:
+            return None
+        name, operator, literal = simple
+        if name != "count" or not isinstance(literal, int) or isinstance(literal, bool):
+            return None
+        verdict, crossed = EARLY_DECISION[operator]
+        return verdict, lambda actual: crossed(actual, literal)
 
     def _validate(self) -> None:
         """Fail at parse time on anything we can check without a broker."""
@@ -171,12 +163,14 @@ class MqttExpectWrapper(Wrapper):
             raise ValueError("MqttExpect: 'topic' field is required")
         if self.count_by is not None and not self.count_by.strip():
             raise ValueError("MqttExpect: 'count_by' must name a field in the payload, not be empty")
-        if self.operator is None:
+        if self.validation is None:
             raise ValueError("MqttExpect: 'validation' field is required")
-        if self.expected_count < 0:
-            raise ValueError(f"MqttExpect: expected count must be >= 0, got {self.expected_count}")
         if self.timeout_s <= 0:
             raise ValueError(f"MqttExpect: timeout_s must be > 0, got {self.timeout_s}")
+
+        self.expression = compile_expression(
+            self.validation, VARIABLES, "MqttExpect: 'validation'", MIGRATION_HINT
+        )
 
     def execute(self) -> None:
         listener = mqtt_registry.get(self.session)
@@ -185,25 +179,32 @@ class MqttExpectWrapper(Wrapper):
 
         passed = early_verdict
         if passed is None:
-            passed = COMPARISONS[self.operator](actual, self.expected_count)
+            passed = self.expression.evaluate(self._variables(matched, tally, actual))
 
         # Set regardless of the verdict, so the HTML report can show both
         # sides of the assertion whether it passed or failed.
-        self.validation_expected = f"count {self.operator} {self.expected_count}"
+        self.validation_expected = self.validation
         self.validation_actual = f"count={actual}{self._unit_note(matched, tally)}"
 
         if not passed:
             raise ValueError(self._failure_message(listener, matched, actual, tally))
 
         LOGGER.info(
-            "MqttExpect: session '%s' topic '%s' satisfied 'count %s %s' (got %d%s)",
+            "MqttExpect: session '%s' topic '%s' satisfied '%s' (count=%d%s)",
             self.session,
             self.topic,
-            self.operator,
-            self.expected_count,
+            self.validation,
             actual,
             self._unit_note(matched, tally),
         )
+
+    def _variables(self, matched: list, tally: dict, actual: int) -> dict[str, object]:
+        """Bind this check's variables for the expression to be evaluated against."""
+        return {
+            "count": actual,
+            "payloads": [message.payload for message in matched],
+            "values": list(tally),
+        }
 
     def _collect(self, listener) -> tuple[list, dict, bool | None]:
         """Read the session for `timeout_s`, counting in this check's unit.
@@ -213,7 +214,7 @@ class MqttExpectWrapper(Wrapper):
         counting messages), and an early verdict if the count settled the
         result before the window ran out.
         """
-        early_verdict, crossed = EARLY_DECISION[self.operator]
+        decision = self._early_decision()
         matched: list = []
         unmatched: list = []
         tally: dict = {}
@@ -231,8 +232,11 @@ class MqttExpectWrapper(Wrapper):
             # Tested once per message rather than once per counted item: one
             # publish is one delivery, and stopping half way through a batch
             # would report a count that no subscriber ever actually saw.
+            if decision is None:
+                continue
+            early_verdict, crossed = decision
             actual = len(tally) if self.count_by is not None else len(matched)
-            if crossed(actual, self.expected_count):
+            if crossed(actual):
                 verdict = early_verdict
                 break
 
@@ -327,8 +331,8 @@ class MqttExpectWrapper(Wrapper):
         """Explain a failed assertion without conflating two different counts.
 
         `matched` is only messages on `self.topic`, and only what this check
-        counted before the verdict became certain - a `==`/`<=`/`<` check
-        stops as soon as it's overshot, so this can be far smaller than
+        counted before the verdict became certain - a simple `==`/`<=`/`<`
+        count check stops as soon as it's overshot, so this can be far smaller than
         everything the session has actually buffered (e.g. other topics on
         the same session, or a long heartbeat window). Showing only `matched`
         would look right but hide where the discrepancy came from; showing
@@ -339,7 +343,7 @@ class MqttExpectWrapper(Wrapper):
         history = listener.recent()
         lines = [
             f"MqttExpect: session '{self.session}' topic '{self.topic}' failed "
-            f"'count {self.operator} {self.expected_count}': counted {actual}"
+            f"'{self.validation}': counted {actual}"
             f"{self._unit_note(matched, tally)} before the result was already decided "
             f"(budget was {self.timeout_s}s)."
         ]

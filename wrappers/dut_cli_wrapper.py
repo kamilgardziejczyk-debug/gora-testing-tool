@@ -7,11 +7,11 @@ checks the answer.
     - !DutCli:
       name: "Gateway Reports Itself Online"
       command: "gora status"
-      validation: 'state:\s*connected'
+      validation: 'matches({reply}, "state:\s*connected")'
 
-`command` is what is typed at the shell; `validation` is a Python regular
-expression searched against the reply. Omit `validation` to just run a command
-for its effect (a reset, a provisioning write) and log what came back.
+`command` is what is typed at the shell; `validation` is a Python expression
+over the reply (see `wrappers/expression.py`). Omit `validation` to just run a
+command for its effect (a reset, a provisioning write) and log what came back.
 
 The shell UART is configured for the whole run, not per command - a `dut_cli:`
 block in the scenario or `--dut-cli` on the command line, exactly as `dut_log`
@@ -23,12 +23,12 @@ each time, and on some boards toggles DTR at the DUT.
 from __future__ import annotations
 
 import logging
-import re
 
 import yaml
 
 from tools.dut_cli import DEFAULT_TIMEOUT_S, DutShell, Response
 
+from .expression import Expression, compile_expression
 from .wrapper import Wrapper
 
 
@@ -40,18 +40,35 @@ LOGGER = logging.getLogger(__name__)
 # failure itself.
 FAILURE_CONTEXT_LINES = 30
 
+# Variables a `validation` expression may use, and what they hold.
+VARIABLES = ("reply", "lines")
+
+# Shown when a scenario still carries a bare regular expression, which is what
+# this field used to be.
+MIGRATION_HINT = 'A bare pattern becomes matches({reply}, "..."), keeping the same meaning.'
+
+
 
 class DutCliWrapper(Wrapper):
     """Runs one shell command on the DUT, optionally asserting on its reply.
 
-    `validation` is compiled at parse time, so a malformed pattern fails the
+    `validation` is a Python expression over what the shell replied:
+
+        {reply}  str        the whole reply, newline-separated
+        {lines}  list[str]  the reply split into lines, without line endings
+
+    A reply is not a device log: output the DUT volunteered while the command
+    ran is captured separately and is never part of `{reply}`. Assert on that
+    with !DutLogExpect instead.
+
+    The expression is compiled at parse time, so a malformed one fails the
     scenario before any hardware is touched rather than at the moment the
     command runs.
 
     A reply the *shell itself* refused - an unknown command, a wrong argument
     count - fails the command regardless of `validation`: that is a scenario
     written against a firmware that does not have this command, which no
-    pattern could sensibly be asserted against.
+    expression could sensibly be asserted against.
     """
 
     requires_dut_cli = True
@@ -60,8 +77,8 @@ class DutCliWrapper(Wrapper):
         self.command_node = command_node
         self.name: str | None = None
         self.command: str | None = None
-        self.pattern: str | None = None
-        self.regex: re.Pattern[str] | None = None
+        self.validation: str | None = None
+        self.expression: Expression | None = None
         self.timeout_s: float = DEFAULT_TIMEOUT_S
 
     def parse(self) -> None:
@@ -79,7 +96,7 @@ class DutCliWrapper(Wrapper):
             elif key == "command":
                 self.command = value_node.value
             elif key == "validation":
-                self.pattern = value_node.value
+                self.validation = value_node.value
             elif key == "timeout_s":
                 self.timeout_s = float(value_node.value)
 
@@ -89,7 +106,7 @@ class DutCliWrapper(Wrapper):
             "Parsed DutCli: name=%s, command=%s, validation=%s, timeout_s=%s",
             self.name,
             self.command,
-            self.pattern,
+            self.validation,
             self.timeout_s,
         )
 
@@ -99,16 +116,12 @@ class DutCliWrapper(Wrapper):
             raise ValueError("DutCli: 'command' field is required")
         if self.timeout_s <= 0:
             raise ValueError(f"DutCli: timeout_s must be > 0, got {self.timeout_s}")
-        if self.pattern is None:
+        if self.validation is None:
             return
 
-        try:
-            self.regex = re.compile(self.pattern)
-        except re.error as error:
-            raise ValueError(
-                f"DutCli: 'validation' is not a valid regular expression "
-                f"({error}): {self.pattern}"
-            ) from None
+        self.expression = compile_expression(
+            self.validation, VARIABLES, "DutCli: 'validation'", MIGRATION_HINT
+        )
 
     def execute(self) -> None:
         shell = self._require_shell()
@@ -120,7 +133,7 @@ class DutCliWrapper(Wrapper):
                 f"Check the command exists in this firmware and takes these arguments."
             )
 
-        if self.regex is None:
+        if self.expression is None:
             LOGGER.info(
                 "DutCli: '%s' replied with %d line(s) in %.2fs",
                 self.command,
@@ -129,15 +142,17 @@ class DutCliWrapper(Wrapper):
             )
             return
 
-        # Set either way, so the report shows both sides of the assertion.
-        match = self.regex.search(response.text)
-        self.validation_expected = f"reply to '{self.command}' matches /{self.pattern}/"
-        self.validation_actual = match.group(0) if match is not None else self._summarize(response)
+        variables = {"reply": response.text, "lines": list(response.lines)}
+        passed = self.expression.evaluate(variables)
 
-        if match is None:
+        # Set either way, so the report shows both sides of the assertion.
+        self.validation_expected = f"reply to '{self.command}': {self.validation}"
+        self.validation_actual = self.expression.describe(variables)
+
+        if not passed:
             raise ValueError(self._failure_message(response))
 
-        LOGGER.info("DutCli: '%s' replied matching /%s/: %s", self.command, self.pattern, match.group(0))
+        LOGGER.info("DutCli: '%s' replied satisfying '%s'", self.command, self.validation)
 
     def _require_shell(self) -> DutShell:
         """The run's shell, opened on first use, or why there isn't one."""
@@ -169,12 +184,6 @@ class DutCliWrapper(Wrapper):
             shell.open()
             return shell.command(self.command, timeout_s=self.timeout_s)
 
-    def _summarize(self, response: Response) -> str:
-        """One-line description of a reply that failed to match."""
-        if not response.lines:
-            return "no reply (the shell returned an empty response)"
-        return f"no match in {len(response.lines)} reply line(s)"
-
     def _failure_message(self, response: Response) -> str:
         """Explain a failed match, quoting what the DUT actually replied.
 
@@ -183,8 +192,9 @@ class DutCliWrapper(Wrapper):
         the reason the reply reads the way it does.
         """
         message = (
-            f"DutCli: the DUT's reply to '{self.command}' did not match /{self.pattern}/ "
-            f"({len(response.lines)} line(s), answered in {response.duration_s:.2f}s)."
+            f"DutCli: the DUT's reply to '{self.command}' did not satisfy "
+            f"'{self.validation}' ({len(response.lines)} line(s), answered in "
+            f"{response.duration_s:.2f}s)."
         )
 
         replied = response.lines[-FAILURE_CONTEXT_LINES:]
