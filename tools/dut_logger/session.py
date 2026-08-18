@@ -1,6 +1,6 @@
-"""Three log files for one scenario run, written side by side.
+"""The log files for one scenario run, written side by side.
 
-A run produces:
+A run produces up to five, and keeps only the ones it used:
 
 *   `<stem>.tool.log`     - the testing tool's own log output.
 *   `<stem>.device.log`   - the DUT's serial output, timestamped.
@@ -10,8 +10,14 @@ A run produces:
     markers, so DUT output, broker traffic and shell commands can be read
     against the command that provoked them.
 
-`<stem>` is taken from the HTML report's path, so the six artefacts of a run
-always share a name.
+`<stem>` is taken from the HTML report's path, so a run's artefacts always
+share a name.
+
+All five are opened up front, since a scenario can start using any of them at
+any point, but the ones nothing was ever written to are removed again when the
+session closes (see `LogSession.close`) and are left out of the report. An
+empty `mqtt.log` beside a scenario that never opened a broker session reads as
+a capture having failed rather than one never having been asked for.
 
 Device lines are also kept in memory as they are written (see
 `LogSession.device_lines`), so a scenario command can assert against what the
@@ -27,6 +33,21 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
+
+# The five logs a run can produce, used as keys for which of them a given run
+# actually put anything in. A scenario that never opens a broker session or
+# sends a shell command should not be handed a report linking an empty MQTT or
+# CLI log: an empty artefact invites the reader to wonder what went wrong with
+# it, when the answer is that the run simply never used it.
+TOOL_LOG = "tool"
+DEVICE_LOG = "device"
+MQTT_LOG = "mqtt"
+CLI_LOG = "cli"
+COMBINED_LOG = "combined"
+
+# In reading order: the tool's own narrative first, the sources it describes
+# next, and the interleaved view last.
+LOG_KINDS = (TOOL_LOG, DEVICE_LOG, MQTT_LOG, CLI_LOG, COMBINED_LOG)
 
 TOOL_SUFFIX = ".tool.log"
 DEVICE_SUFFIX = ".device.log"
@@ -94,7 +115,7 @@ def timestamp() -> str:
 
 
 class LogSession:
-    """Open handles to a run's four log files, safe to write from any thread.
+    """Open handles to a run's log files, safe to write from any thread.
 
     The device reader and each MQTT client's network thread run on their own
     threads while the scenario runner writes markers from the main one, and all
@@ -117,6 +138,7 @@ class LogSession:
         self._mqtt: TextIO | None = None
         self._cli: TextIO | None = None
         self._combined: TextIO | None = None
+        self._used: set[str] = set()
         self._device_lines: deque[DeviceLine] = deque(maxlen=DEVICE_BUFFER_LINES)
         self._device_seq = 0
         self._device_lines_dropped = 0
@@ -135,20 +157,91 @@ class LogSession:
         self._combined = self.combined_path.open("w", encoding="utf-8")
 
     def close(self) -> None:
-        """Close every open handle. Idempotent, and safe to call after a failure."""
+        """Close every open handle, discarding the logs this run never used.
+
+        Idempotent, and safe to call after a failure.
+        """
         with self._lock:
             for stream in (self._tool, self._device, self._mqtt, self._cli, self._combined):
                 if stream is not None and not stream.closed:
                     stream.close()
             self._tool = self._device = self._mqtt = self._cli = self._combined = None
+            self._discard_unused()
             # No more device lines are coming, so release anyone still waiting
             # for one instead of leaving them to sit out their full timeout.
             self._device_line_added.notify_all()
+
+    def _discard_unused(self) -> None:
+        """Remove the log files this run opened but never wrote anything to.
+
+        `open()` creates all five up front, so a scenario with no broker
+        session and no shell commands would otherwise leave a 0-byte
+        `mqtt.log` and `cli.log` beside its report - artefacts that read as a
+        capture having failed rather than one never having been asked for.
+        Only an empty file for an unused kind is removed, so anything actually
+        recorded always survives (a device log holding only the "no DUT
+        console configured" note included).
+
+        Best effort: a file that cannot be removed is left alone rather than
+        raising, since this runs in the runner's cleanup path where an
+        exception would mask whatever actually ended the run.
+        """
+        used = self._used
+        for kind, path in (
+            (TOOL_LOG, self.tool_path),
+            (DEVICE_LOG, self.device_path),
+            (MQTT_LOG, self.mqtt_path),
+            (CLI_LOG, self.cli_path),
+            (COMBINED_LOG, self.combined_path),
+        ):
+            if kind in used:
+                continue
+            try:
+                if path.exists() and path.stat().st_size == 0:
+                    path.unlink()
+            except OSError:
+                pass
+
+    def mark_used(self, kind: str) -> None:
+        """Record that `kind` is in use by this run, whether or not it has content yet.
+
+        Called when a facility is *activated* rather than when it first writes,
+        so a configured DUT console that stayed silent is still reported. The
+        write methods mark their own kind too, which covers anything that
+        produces output without a caller having announced it.
+        """
+        if kind not in LOG_KINDS:
+            raise ValueError(f"unknown log kind '{kind}' (expected one of {', '.join(LOG_KINDS)})")
+        with self._lock:
+            self._used.add(kind)
+
+    def used_logs(self) -> frozenset[str]:
+        """Which of `LOG_KINDS` this run actually used."""
+        with self._lock:
+            return frozenset(self._used)
+
+    def log_files(self) -> list[tuple[str, Path]]:
+        """`(kind, path)` for each log this run used, in `LOG_KINDS` order.
+
+        The tool and combined logs are always present in practice, since the
+        tool logs its own progress; the other three appear only for a run that
+        had a DUT console, a broker session, or a shell.
+        """
+        paths = {
+            TOOL_LOG: self.tool_path,
+            DEVICE_LOG: self.device_path,
+            MQTT_LOG: self.mqtt_path,
+            CLI_LOG: self.cli_path,
+            COMBINED_LOG: self.combined_path,
+        }
+        used = self.used_logs()
+        return [(kind, paths[kind]) for kind in LOG_KINDS if kind in used]
 
     def write_tool(self, line: str) -> None:
         """Record one line of the tool's own output, in tool + combined."""
         stamped = f"[{timestamp()}] {line}"
         with self._lock:
+            self._used.update((TOOL_LOG, COMBINED_LOG))
             self._write(self._tool, stamped)
             self._write(self._combined, f"[{timestamp()}] {TOOL_PREFIX} | {line}")
 
@@ -158,8 +251,21 @@ class LogSession:
         Also appends it to the in-memory buffer and wakes any waiter, so a
         command asserting on DUT output sees it as it arrives.
         """
+        self._write_device_line(line, marks_device=True)
+
+    def _write_device_line(self, line: str, marks_device: bool) -> None:
+        """Write one line to device + combined, optionally marking device used.
+
+        `marks_device` is False for a note *about* the device log (see
+        `write_device_note`): a log holding only "no DUT console was
+        configured" is not a capture, and reporting it as one would put an
+        empty DUT log in front of a reader for every run without a console.
+        """
         stamped = f"[{timestamp()}] {line}"
         with self._lock:
+            if marks_device:
+                self._used.add(DEVICE_LOG)
+            self._used.add(COMBINED_LOG)
             self._write(self._device, stamped)
             self._write(self._combined, f"[{timestamp()}] {DEVICE_PREFIX} | {line}")
             self._buffer_device(line)
@@ -227,7 +333,7 @@ class LogSession:
         For saying why a device log is empty. Marked as a note so it can't be
         confused with something the DUT actually emitted.
         """
-        self.write_device(f"[no-dut] {text}")
+        self._write_device_line(f"[no-dut] {text}", marks_device=False)
 
     def write_mqtt(self, line: str) -> None:
         """Record one line of MQTT traffic or lifecycle, in mqtt + combined.
@@ -243,6 +349,7 @@ class LogSession:
         """
         stamped = f"[{timestamp()}] {line}"
         with self._lock:
+            self._used.update((MQTT_LOG, COMBINED_LOG))
             self._write(self._mqtt, stamped)
             self._write(self._combined, f"[{timestamp()}] {MQTT_PREFIX} | {line}")
 
@@ -257,6 +364,7 @@ class LogSession:
         """
         stamped = f"[{timestamp()}] {line}"
         with self._lock:
+            self._used.update((CLI_LOG, COMBINED_LOG))
             self._write(self._cli, stamped)
             self._write(self._combined, f"[{timestamp()}] {CLI_PREFIX} | {line}")
 
@@ -267,6 +375,7 @@ class LogSession:
         log is the one that gains structure.
         """
         with self._lock:
+            self._used.add(COMBINED_LOG)
             self._write(self._combined, f"[{timestamp()}] --- {text} ---")
 
     @staticmethod

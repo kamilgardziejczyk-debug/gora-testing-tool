@@ -389,15 +389,19 @@ A command that fails stops the scenario at that point, same as before this exist
 
 ### Log Files
 
-Alongside the report, every run writes five logs sharing its name — so `results/gateway_20260730_143322.html` comes with:
+Alongside the report, a run writes up to five logs sharing its name — so `results/gateway_20260730_143322.html` comes with:
 
-| File | Contents |
-| --- | --- |
-| `gateway_20260730_143322.tool.log` | The tool's own log output, timestamped |
-| `gateway_20260730_143322.device.log` | The DUT's serial console, timestamped |
-| `gateway_20260730_143322.mqtt.log` | Every MQTT message received, plus each session's connect/subscribe/disconnect, timestamped |
-| `gateway_20260730_143322.cli.log` | Every `!DutCli` shell transaction: the command sent (`->`), each reply line (`<-`), and log output that arrived while it ran (`<~`) |
-| `gateway_20260730_143322.combined.log` | All four interleaved, plus per-command `START`/`END` markers carrying PASS/FAIL |
+| File | Written when | Contents |
+| --- | --- | --- |
+| `gateway_20260730_143322.tool.log` | always | The tool's own log output, timestamped |
+| `gateway_20260730_143322.device.log` | a DUT console is captured | The DUT's serial console, timestamped |
+| `gateway_20260730_143322.mqtt.log` | the scenario opens a broker session | Every MQTT message received, plus each session's connect/subscribe/disconnect, timestamped |
+| `gateway_20260730_143322.cli.log` | the scenario sends shell commands | Every `!DutCli` shell transaction: the command sent (`->`), each reply line (`<-`), and log output that arrived while it ran (`<~`) |
+| `gateway_20260730_143322.combined.log` | always | All of the above interleaved, plus per-command `START`/`END` markers carrying PASS/FAIL |
+
+**Only the logs a run actually used are written and linked from its report.** A scenario with no `!MqttSubscribe` and no `!DutCli` produces no `mqtt.log` and no `cli.log` at all, rather than empty ones — an empty artefact reads as a capture having failed, when the run simply never asked for it. The DUT log is keyed on the console being *configured*, not on the DUT having said anything: a board that was supposed to be talking and stayed silent leaves an empty `device.log`, and that emptiness is itself evidence.
+
+A run with no DUT console still leaves a `device.log` holding a single `[no-dut]` note saying why there was nothing to capture. It is deliberately not linked from the report, so it cannot be mistaken for a capture.
 
 The combined log is the one to read when a test fails: it shows what the DUT was saying and what the broker carried at the moment a command failed, without cross-referencing timestamps by hand. Each line is tagged with the source it came from:
 

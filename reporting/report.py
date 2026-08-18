@@ -14,6 +14,18 @@ if TYPE_CHECKING:  # Import for typing only - reporting must not depend on the t
 
 TEMPLATE_NAME = "report.html.j2"
 
+# Heading shown for each log kind the run produced. Keyed by the kind names
+# `LogSession` reports, so a run that never opened a broker session or a shell
+# simply has no row for those - rather than a link to an empty file, which
+# reads as something having gone wrong with the capture.
+LOG_LABELS = {
+    "tool": "Tool log",
+    "device": "DUT log",
+    "mqtt": "MQTT log",
+    "cli": "CLI log",
+    "combined": "Combined log",
+}
+
 
 @dataclass
 class TestResult:
@@ -48,7 +60,8 @@ def generate_report(
     `session`, when given, contributes the run's log filenames so the report
     points at the artefacts sitting beside it. Only the names are rendered,
     not the contents: a chatty DUT would otherwise bloat the HTML, and the
-    logs are more useful greppable on disk.
+    logs are more useful greppable on disk. Only the logs the run actually
+    used are listed - see `_log_file_names`.
     """
     env = Environment(loader=PackageLoader("reporting", "templates"), autoescape=True)
     template = env.get_template(TEMPLATE_NAME)
@@ -67,20 +80,19 @@ def generate_report(
 
 
 def _log_file_names(session: "LogSession | None") -> list[tuple[str, str]]:
-    """`(label, filename)` pairs for a run's logs, empty when none were captured.
+    """`(label, filename)` pairs for the logs this run used, empty when none.
+
+    Only the kinds the session reports as used: a scenario with no broker
+    session and no shell commands leaves `mqtt.log` and `cli.log` empty on
+    disk, and linking them from the report only invites the reader to wonder
+    what went wrong with a capture that was never meant to happen.
 
     Bare filenames rather than full paths, so the links still resolve when the
     report and its logs are copied off the test node together.
     """
     if session is None:
         return []
-    return [
-        ("Tool log", session.tool_path.name),
-        ("DUT log", session.device_path.name),
-        ("MQTT log", session.mqtt_path.name),
-        ("CLI log", session.cli_path.name),
-        ("Combined log", session.combined_path.name),
-    ]
+    return [(LOG_LABELS[kind], path.name) for kind, path in session.log_files()]
 
 
 def _write_html(html: str, output_path: Path) -> None:

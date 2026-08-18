@@ -10,7 +10,14 @@ from reporting import TestResult, generate_report
 from tools.dut_cli import DEFAULT_BAUD as DEFAULT_CLI_BAUD
 from tools.dut_cli import DutShell
 from tools.dut_logger import DEFAULT_BAUD as DEFAULT_DUT_BAUD
-from tools.dut_logger import DutLogger, LogSession, attach as attach_log_handler
+from tools.dut_logger import (
+    CLI_LOG,
+    DEVICE_LOG,
+    MQTT_LOG,
+    DutLogger,
+    LogSession,
+    attach as attach_log_handler,
+)
 from tools.usb_hub import Switchboard, UsbHub
 from wrappers import Wrapper, mqtt_registry, relay_cleanup_all, usb_switch_restore_all
 
@@ -225,6 +232,7 @@ def attach_dut_cli_shell(
     shell = DutShell(port=config.port, baud=config.baud, log_session=session)
     for wrapper in needing_shell:
         wrapper.dut_shell = shell
+    session.mark_used(CLI_LOG)
     LOGGER.info("DUT shell configured on %s at %d baud", config.port, config.baud)
     return shell
 
@@ -344,10 +352,15 @@ def attach_mqtt_log_session(wrappers: list[Wrapper], session: LogSession) -> Non
 
     Unconditional, unlike `attach_dut_log_session`: the MQTT log needs no
     hardware attached, so a scenario opening a broker session always gets one.
+
+    A scenario with no such command leaves the MQTT log unmarked, and it is
+    then left out of the report rather than linked as an empty file.
     """
-    for wrapper in wrappers:
-        if wrapper.captures_mqtt_log:
-            wrapper.log_session = session
+    capturing = [wrapper for wrapper in wrappers if wrapper.captures_mqtt_log]
+    for wrapper in capturing:
+        wrapper.log_session = session
+    if capturing:
+        session.mark_used(MQTT_LOG)
 
 
 def resolve_report_path(test_file: str, report_arg: str | None) -> Path:
@@ -520,6 +533,10 @@ def start_dut_logging(session: LogSession, dut_log: DutLogConfig | None) -> DutL
 
     dut_logger = DutLogger(session, port=dut_log.port, baud=dut_log.baud)
     dut_logger.start()
+    # Marked on activation rather than on the first captured line, so a console
+    # that was configured but stayed silent is still reported - an empty device
+    # log is itself evidence when the DUT was supposed to be talking.
+    session.mark_used(DEVICE_LOG)
     return dut_logger
 
 
@@ -573,14 +590,8 @@ def main() -> None:
             dut_shell.close()
         if dut_logger is not None:
             dut_logger.stop()
-        LOGGER.info(
-            "Wrote logs to %s, %s, %s, %s, %s",
-            session.tool_path,
-            session.device_path,
-            session.mqtt_path,
-            session.cli_path,
-            session.combined_path,
-        )
+        written = ", ".join(str(path) for _, path in session.log_files())
+        LOGGER.info("Wrote logs to %s", written)
         session.close()
 
 
