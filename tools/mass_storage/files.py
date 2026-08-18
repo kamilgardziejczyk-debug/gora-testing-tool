@@ -131,9 +131,15 @@ def copy_from(mount: Mount, pattern: str, dest: Path) -> list[str]:
         raise CardPathNotFoundError(f"nothing on the card matches '{pattern}'")
 
     dest.mkdir(parents=True, exist_ok=True)
+    # Logged before anything is copied, not just after: the tracker is a
+    # full-speed USB device (~1 MB/s), so several directories' worth of data
+    # can take minutes, and a run that only logs once at the end looks
+    # indistinguishable from a hung one for the whole time it is working.
+    LOGGER.info("Copying %d item(s) matching '%s' off the card into %s", len(matches), pattern, dest)
+
     copied: list[str] = []
     failed: list[tuple[str, Exception]] = []
-    for source in matches:
+    for index, source in enumerate(matches, start=1):
         relative = source.relative_to(mount.mountpoint)
         card_path = f"/{relative.as_posix()}"
         try:
@@ -147,6 +153,7 @@ def copy_from(mount: Mount, pattern: str, dest: Path) -> list[str]:
             failed.append((card_path, error))
         else:
             copied.append(card_path)
+            LOGGER.info("Copied %s off the card (%d/%d)", card_path, index, len(matches))
 
     if failed:
         raise CardCopyError(_copy_failure_message(pattern, copied, failed))

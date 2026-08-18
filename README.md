@@ -279,8 +279,10 @@ jobs:
       - name: Run gateway scenario
         run: |
           python /app/main.py -t /app/scenarios/gateway.yml \
-            -f "$GITHUB_WORKSPACE/firmware" -r /app/results
+            -f "$GITHUB_WORKSPACE/firmware" -r /app/results --clean-results
 ```
+
+`--clean-results` matters specifically for this runner-mode setup: the container is long-lived (`--restart unless-stopped`), so `/app/results` is not a fresh directory each job the way a one-shot `docker run` would give you - without it, every report, log and `!DutStorage` copy from every past job stays on the node's disk forever. It empties `/app/results` before this job's own report is written, leaving the directory itself (a host bind mount) in place. Off by default for local/interactive use, where keeping run history is normally what you want.
 
 It's `workflow_dispatch`-only (no push/PR trigger) since the scenario
 flashes real firmware and drives real BLE/MQTT/sub-GHz hardware. No checkout
@@ -401,6 +403,7 @@ The tool is executed using `main.py`. You specify the path to a scenario YAML fi
 *   `-p, --port` (Optional): Serial port for flashing (e.g. `/dev/ttyUSB0`). Overrides the port specified inside the YAML file for all `!ProgramEsptool` commands. Not applicable to `!SubghzSim`, which uses a different device/port and is always configured via its own `port` field in the YAML — see below.
 *   `-f, --firmware` (Optional): Path to the directory containing firmware binaries (such as `.bin`, `.hex`, or `.elf`). Overrides the directory for all `!ProgramEsptool` and `!ProgramJlink` commands.
 *   `-r, --report` (Optional): Path to write the HTML test report to. A directory (existing, ending in `/`, or just a bare name with no `.html` suffix like `reports`) gets a default-named report file written inside it, rather than becoming the report file itself. Defaults to `results/<scenario>_<timestamp>.html`.
+*   `--clean-results` (Optional): Empty the report's directory before this run, so old reports, logs and `!DutStorage` copies don't accumulate forever. Off by default — local/interactive use generally wants to keep run history; a long-lived self-hosted runner container generally does not. See the [runner-mode workflow example](#running-as-a-github-actions-self-hosted-runner).
 *   `--dut-log` (Optional): Serial port carrying the DUT's own console (e.g. `/dev/ttyACM0`), captured for the whole run into the log files below. Overrides the scenario's `dut_log` block, since the console's device path is a property of the test *node*, not the test.
 *   `--dut-log-baud` (Optional): Baud rate for `--dut-log`. Defaults to the scenario's value, else `115200`.
 *   `--dut-cli` (Optional): Serial port carrying the DUT's *shell* (e.g. `/dev/ttyACM1`), which [`!DutCli`](#dutcli) commands send to. Overrides the scenario's `dut_cli` block, for the same reason `--dut-log` overrides `dut_log`. Must be a different port from `--dut-log`: one process reading a port is what makes framing a shell response possible at all.
@@ -674,6 +677,7 @@ Things to know:
 *   **Assert on the firmware's side with `!DutLogExpect`.** None of the device's state machine is visible from the host. The lines worth checking are `USB Storage is now ACTIVE` (card handed over), `Storage control returned to ESP32` (eject received), and `Remounting SD card normally for application` (card reclaimed after VBUS drops). Leave those checks on the default `since: scenario` — the line arrives while the previous command is still finishing, so a check looking only forward from its own start can miss it.
 *   **Throughput is limited.** The tracker is a full-speed USB device, so expect around 1 MB/s. Keep `copy_from` scoped to a subdirectory rather than the whole card.
 *   **Scope `path` to what the firmware actually wrote, not `/*`.** A card that has ever been mounted on a desktop can carry `.Trash-1000` or other metadata that is neither the DUT's output nor guaranteed to be readable — an SD card's bad sectors surface as I/O errors on exactly this kind of leftover. `copy_from` copies each match independently and does not let one bad item block the ones after it, but a narrower `path` (e.g. `/session_*`) means there is nothing irrelevant to fail on in the first place.
+*   **`copy_from` logs as it goes**, not only at the end: one line before the first item starts, and one per item as it completes. On a full-speed link, several directories' worth of data can take minutes with nothing else to show for it — check the tool log if a run looks stuck; a copy still climbing through `(12/26)` is working, not hung.
 
 #### Clearing the card (`delete`)
 

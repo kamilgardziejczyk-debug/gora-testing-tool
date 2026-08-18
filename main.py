@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +63,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to write the HTML test report to, or a directory to write a default-named "
         "report into. Defaults to results/<scenario>_<timestamp>.html.",
+    )
+    argument_parser.add_argument(
+        "--clean-results",
+        action="store_true",
+        help="Empty the report directory before this run, so an unattended node's results/ "
+        "does not accumulate old reports, logs and !DutStorage copies forever. Off by default "
+        "- local/interactive use generally wants to keep run history.",
     )
     argument_parser.add_argument(
         "--dut-log",
@@ -369,6 +377,37 @@ def attach_mqtt_log_session(wrappers: list[Wrapper], session: LogSession) -> Non
         session.mark_used(MQTT_LOG)
 
 
+def clean_results_dir(directory: Path) -> None:
+    """Empty `directory` of everything in it, leaving the directory itself.
+
+    For `--clean-results`, on an unattended node where nothing else ever
+    clears out old reports: a self-hosted runner container's results/ is a
+    host bind mount that otherwise grows without bound across every job run,
+    and stale !DutStorage copies sitting under it are worse than merely
+    large - a `copy_from` with `dirs_exist_ok=True` would merge a new run's
+    files into whatever an old one already left under the same session name.
+
+    Not `shutil.rmtree(directory)` followed by `mkdir`: `directory` is where
+    `resolve_report_path` decided the report belongs, and on a bind mount
+    removing the mounted directory itself (rather than its contents) is the
+    kind of thing worth not doing from inside a container. A missing
+    directory is not an error - the first run on a fresh node has nothing to
+    clean yet, and `LogSession.open()` creates it either way.
+    """
+    if not directory.exists():
+        return
+
+    removed = 0
+    for entry in directory.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+        removed += 1
+
+    LOGGER.info("--clean-results: removed %d item(s) from %s", removed, directory)
+
+
 def resolve_report_path(test_file: str, report_arg: str | None) -> Path:
     """The default report path is derived from the scenario name and the
     current time, so repeated runs of the same scenario don't overwrite
@@ -563,6 +602,12 @@ def main() -> None:
     # the CLI args - so parse errors and per-command parse logs land in the
     # tool log too, which is where you look when a scenario won't load.
     report_path = resolve_report_path(args.test, args.report)
+    if args.clean_results:
+        # Before the session opens: LogSession.open() immediately creates
+        # this run's own log files in the same directory, and cleaning after
+        # that would unlink files this process still has open, silently
+        # losing everything written to them.
+        clean_results_dir(report_path.parent)
     session = LogSession(report_path)
     session.open()
     attach_log_handler(session)

@@ -267,6 +267,32 @@ class DeleteTests(CardTestCase):
         self.assertTrue(outside.is_file())
 
 
+class ProgressLoggingTests(CardTestCase):
+    """A slow copy must look like it is working, not like it has hung."""
+
+    def test_a_start_line_is_logged_before_any_copying(self):
+        dest = Path(self._tmp.name) / "out"
+        with self.assertLogs("tools.mass_storage.files", level="INFO") as captured:
+            copy_from(self.mount, "/logs/*.log", dest)
+
+        self.assertTrue(
+            any("Copying 2 item(s)" in line for line in captured.output),
+            captured.output,
+        )
+        # The start line comes before either item's own completion line.
+        start_index = next(i for i, line in enumerate(captured.output) if "Copying 2 item(s)" in line)
+        item_index = next(i for i, line in enumerate(captured.output) if "(1/2)" in line)
+        self.assertLess(start_index, item_index)
+
+    def test_each_item_logs_its_own_progress(self):
+        dest = Path(self._tmp.name) / "out"
+        with self.assertLogs("tools.mass_storage.files", level="INFO") as captured:
+            copy_from(self.mount, "/logs/*.log", dest)
+
+        self.assertTrue(any("(1/2)" in line for line in captured.output), captured.output)
+        self.assertTrue(any("(2/2)" in line for line in captured.output), captured.output)
+
+
 class ContainmentTests(CardTestCase):
     def test_relative_path_resolves_inside(self):
         self.assertEqual(resolve(self.mount, "/logs"), (self.root / "logs").resolve())

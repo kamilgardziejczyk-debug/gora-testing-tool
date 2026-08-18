@@ -94,15 +94,12 @@ commands:
     name: "Card Holds A Log Directory"
     action: list
     path: "/"
-    validation: "len(matching('session_*', {dirs})) >= 1"
+    validation: "len(matching('session_*', {dirs})) >= 2"
 
-  # Scoped to /session_* rather than /* - the card has picked up desktop
-  # trash metadata (.Trash-1000) from a prior debug mount, which is not the
-  # DUT's own output and is not guaranteed to even be readable.
   - !DutStorage:
     name: "Pull The Logs Off The Card"
     action: copy_from
-    path: "/session_*"
+    path: "/session*"
     dest: "../results/sd"
 
   - !DutStorage:
