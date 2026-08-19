@@ -42,6 +42,14 @@
 # why. Asserting the clock first turns that into the actual cause. Reference
 # timings from a healthy run: clock set, AWS IoT connected 38 ms later, shadow
 # published 83 ms later.
+#
+# The commands are split across !Group blocks so the report reads as a handful
+# of stages rather than one flat list. A group is a label and nothing else -
+# the commands inside it run in order, in place - so how they are grouped
+# cannot change what this scenario does. In particular "Cloud Connection"
+# opens the subscription that "Sub-GHz Uplink" counts on and "Teardown"
+# closes: the session outlives the group it was created in, because groups
+# have no setup or teardown of their own. See README.md.
 
 dut_log:
   port: "/dev/ttyACM0"
@@ -51,114 +59,135 @@ dut_cli:
   port: "/dev/ttyACM1"
   baud: 115200
 
-commands:
-  - !ProgramJlink:
-    name: "Flash The Device"
-    device: "RW612"
-    interface: "SWD"
-    speed: 4000
-    firmware: "zephyr.hex"
-    wait_after_s: 9
+groups:
+  - !Group
+    name: "Flashing"
+    commands:
+      - !ProgramJlink:
+        name: "Flash The Device"
+        device: "RW612"
+        interface: "SWD"
+        speed: 4000
+        firmware: "zephyr.hex"
+        wait_after_s: 9
 
-  - !DutCli:
-    name: "Gateway Reports Itself Online"
-    command: "journal clear"
-    validation: 'matches({reply}, "Journal cleared")'
-    timeout_s: 360
+  # Clear anything the previous run left in the journal, then hand the device
+  # its Wi-Fi credentials over BLE. The write triggers a reset, so this group
+  # ends with the device rebooting - the link is not expected to survive it.
+  - !Group
+    name: "Provisioning"
+    commands:
+      - !DutCli:
+        name: "Gateway Reports Itself Online"
+        command: "journal clear"
+        validation: 'matches({reply}, "Journal cleared")'
+        timeout_s: 360
 
-  - !RelayControl
-    name: "Start BLE Advertising"
-    relay: 1
-    pulse_s: 4
-    wait_after_ms: 100
-      
-  - !BleCentral:
-    name: "Set Wifi Credentials And Reset"
-    device: "GoraGateway_01B4EE"
-    service: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f10"
-    scan_timeout_s: 3
-    wait_after_s: 9
-    actions:
-      - write:
-          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f11"
-          value: "dziewiatka"
-          encoding: utf8
-      - write:
-          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f12"
-          value: "Belussi-1988"
-          encoding: utf8
-      - write:
-          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f13"
-          value: "01"
-      - write:
-          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f14"
-          value: "01"
+      - !RelayControl
+        name: "Start BLE Advertising"
+        relay: 1
+        pulse_s: 4
+        wait_after_ms: 100
 
-  - !MqttSubscribe:
-    name: "Setup Mqtt Subscriber"
-    session: "iot"
-    endpoint: "a2onrynswccrx9-ats.iot.us-east-1.amazonaws.com"
-    client_id: "gateway-01-test-listener"
-    cert: "../tools/mqtt_listener/certs/device-cert.pem"
-    private_key: "../tools/mqtt_listener/certs/device-key.pem"
-    root_ca: "../tools/mqtt_listener/certs/root-ca.pem"
-    topics:
-      - "$aws/things/gateway-01/shadow/update"
-      - "gora/gateway-01/journal"
+      - !BleCentral:
+        name: "Set Wifi Credentials And Reset"
+        device: "GoraGateway_01B4EE"
+        service: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f10"
+        scan_timeout_s: 3
+        wait_after_s: 9
+        actions:
+          - write:
+              uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f11"
+              value: "dziewiatka"
+              encoding: utf8
+          - write:
+              uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f12"
+              value: "Belussi-1988"
+              encoding: utf8
+          - write:
+              uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f13"
+              value: "01"
+          - write:
+              uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f14"
+              value: "01"
 
-  - !RelayControl
-    name: "Start BLE Advertising"
-    relay: 1
-    pulse_s: 4
-    wait_after_ms: 100
+  # The subscription is set up in this group rather than alongside the uplink
+  # checks that read from it, for the reason in the header: it has to be
+  # listening before the rebooted device publishes anything.
+  - !Group
+    name: "Cloud Connection"
+    commands:
+      - !MqttSubscribe:
+        name: "Setup Mqtt Subscriber"
+        session: "iot"
+        endpoint: "a2onrynswccrx9-ats.iot.us-east-1.amazonaws.com"
+        client_id: "gateway-01-test-listener"
+        cert: "../tools/mqtt_listener/certs/device-cert.pem"
+        private_key: "../tools/mqtt_listener/certs/device-key.pem"
+        root_ca: "../tools/mqtt_listener/certs/root-ca.pem"
+        topics:
+          - "$aws/things/gateway-01/shadow/update"
+          - "gora/gateway-01/journal"
 
-  - !BleCentral:
-    name: "Wait For Device Online Over BLE"
-    device: "GoraGateway_01B4EE"
-    service: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f10"
-    scan_timeout_s: 3
-    actions:
-      - read:
-          uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f15"
-          validation: '{value} == "01"'
-          attempts: 15
-          retry_wait_ms: 2000
+      - !RelayControl
+        name: "Start BLE Advertising"
+        relay: 1
+        pulse_s: 4
+        wait_after_ms: 100
 
-  - !DutLogExpect:
-    name: "Wall Clock Set From NTP"
-    validation: 'matches({line}, r"Wall clock set from \S+: unix=[0-9]+")'
-    timeout_s: 60
+      - !BleCentral:
+        name: "Wait For Device Online Over BLE"
+        device: "GoraGateway_01B4EE"
+        service: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f10"
+        scan_timeout_s: 3
+        actions:
+          - read:
+              uuid: "9fd03f93-cb76-4f6f-84db-6ea8e5bf9f15"
+              validation: '{value} == "01"'
+              attempts: 15
+              retry_wait_ms: 2000
 
-  - !MqttExpect:
-    name: "Collect Device Shadow Messages"
-    session: "iot"
-    topic: "$aws/things/gateway-01/shadow/update"
-    validation: "{count} == 1"
-    timeout_s: 15
+      - !DutLogExpect:
+        name: "Wall Clock Set From NTP"
+        validation: 'matches({line}, r"Wall clock set from \S+: unix=[0-9]+")'
+        timeout_s: 60
 
-  - !SubghzSim:
-    name: "Add Simulated Sensors"
-    port: "/dev/ttyUSB0"
-    baud: 115200
-    duration_s: 30
-    actions:
-      - add: temp_hum
-        count: 8
-      - add: co
-        count: 8
-      - add: smoke
-        count: 8
-      - add: heat
-        count: 8
+      - !MqttExpect:
+        name: "Collect Device Shadow Messages"
+        session: "iot"
+        topic: "$aws/things/gateway-01/shadow/update"
+        validation: "{count} == 1"
+        timeout_s: 15
 
-  - !MqttExpect:
-    name: "Collect Simulated Sensors Messages"
-    session: "iot"
-    topic: "gora/gateway-01/journal"
-    count_by: "seq"
-    validation: "{count} == 192"
-    timeout_s: 150
+  - !Group
+    name: "Sub-GHz Uplink"
+    commands:
+      - !SubghzSim:
+        name: "Add Simulated Sensors"
+        port: "/dev/ttyUSB0"
+        baud: 115200
+        duration_s: 30
+        actions:
+          - add: temp_hum
+            count: 8
+          - add: co
+            count: 8
+          - add: smoke
+            count: 8
+          - add: heat
+            count: 8
 
-  - !MqttDisconnect:
-    name: "Close The Listener"
-    session: "iot"
+      - !MqttExpect:
+        name: "Collect Simulated Sensors Messages"
+        session: "iot"
+        topic: "gora/gateway-01/journal"
+        count_by: "seq"
+        validation: "{count} == 192"
+        timeout_s: 150
+
+  - !Group
+    name: "Teardown"
+    commands:
+      - !MqttDisconnect:
+        name: "Close The Listener"
+        session: "iot"
