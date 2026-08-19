@@ -19,12 +19,10 @@ tasks:
     files:
       - "results/*.device.log"
       - "results/sd/session_*/*.csv"
-    questions:
-      - "Correlate GNSS fix loss with power rail dips in the session CSVs."
-      - "Does the battery curve explain any reset or gap in the recording?"
-
-  - name: "Whole run"
-    files:
       - "results/*.combined.log"
     questions:
-      - "Is anything anomalous across this run that no check in the scenario asked about?"
+      - "What is the device run time?"
+      - "Did the device restart during the test?"
+      - "Are there any gaps in ADC, IMU and GNSS readings?"
+      - "Please draw IMU, ADC charts, save them in PNG file"
+      - "Please generate map file with the locations read from GNSS CVS. Return it in PNG file."
