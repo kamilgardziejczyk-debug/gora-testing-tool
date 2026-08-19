@@ -1140,7 +1140,7 @@ groups:
         firmware: "tekpadz.bin"
 ```
 
-A scenario declares **either `commands:` or `groups:`, not both** — it is wholly ungrouped or wholly grouped. An existing scenario keeps working untouched (`gateway.yml` still uses a plain `commands:` list); grouping one means wrapping its commands in `!Group` blocks and indenting them, as `tracker.yml` shows.
+A scenario declares **either `commands:` or `groups:`, not both** — it is wholly ungrouped or wholly grouped. A plain `commands:` list keeps working untouched; grouping such a scenario means wrapping its commands in `!Group` blocks and indenting them, changing nothing about what it runs. Both scenarios shipped here are grouped — `tracker.yml` by bench stage, `gateway.yml` by *Flashing / Provisioning / Cloud Connection / Sub-GHz Uplink / Teardown*.
 
 A group is **purely a label**. It is expanded away when the scenario is parsed, exactly like `!Loop`: the commands inside it run in order, in place, with no setup, teardown or isolation of any kind, and a failure inside one still stops the whole scenario rather than just the group. How a scenario is grouped therefore cannot change what it does — only how its results read.
 
