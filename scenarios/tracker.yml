@@ -148,6 +148,8 @@ groups:
         name: "Device Acquires A GNSS Fix"
         validation: 'matches({line}, r"GNSS FIX ACQUIRED with [0-9]+ satellites")'
         timeout_s: 300
+        wait_after_s: 7200
+
 
   # ... Let the device working ...
 
