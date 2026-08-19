@@ -1,0 +1,30 @@
+---
+# Questions asked of what a tracker run left behind, answered after the run:
+#
+#   python analysis/analyze.py --tasks scenarios/tracker.analysis.yml
+#
+# Nothing here runs on the bench. The scenario writes logs into `results/` and
+# a `!DutStorage` `copy_from` pulls the card's session directories into
+# `results/sd/`; these questions are asked of those files afterwards, on a
+# machine that has a credential. Paths are globs, resolved against the
+# directory you run the command from - the repository root.
+#
+# A task with no `files:` of its own is given whatever `--files` named, so a
+# one-off question needs no edit here:
+#
+#   python analysis/analyze.py --tasks questions.yml --files results/*.device.log
+
+tasks:
+  - name: "Session gaps"
+    files:
+      - "results/*.device.log"
+      - "results/sd/session_*/*.csv"
+    questions:
+      - "Correlate GNSS fix loss with power rail dips in the session CSVs."
+      - "Does the battery curve explain any reset or gap in the recording?"
+
+  - name: "Whole run"
+    files:
+      - "results/*.combined.log"
+    questions:
+      - "Is anything anomalous across this run that no check in the scenario asked about?"

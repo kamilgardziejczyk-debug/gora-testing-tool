@@ -1,0 +1,8 @@
+# Deliberately NOT referenced from the root requirements.txt, and so not
+# installed into the test node's Docker image: analysis runs on a developer's
+# machine, after the results are copied down. The node never imports this, and
+# an image that carries an API SDK it never uses is an image someone will
+# eventually put a credential in.
+#
+#   pip install -r analysis/requirements.txt
+anthropic

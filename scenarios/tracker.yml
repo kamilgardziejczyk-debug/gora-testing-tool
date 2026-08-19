@@ -29,8 +29,8 @@
 # on the flash: capture is running by then, so the tracker's whole boot lands
 # in the device log instead of being slept through with nothing listening.
 #
-# The commands are split across four !Group blocks so the report reads as four
-# stages rather than sixteen flat rows. A group is a label and nothing else -
+# The commands are split across !Group blocks so the report reads as a handful
+# of stages rather than twenty-five flat rows. A group is a label and nothing else -
 # the commands inside it run in order, in place - so how they are grouped
 # cannot change what this scenario does. See README.md.
 
@@ -51,14 +51,14 @@ groups:
       - !UsbSwitch
         name: "Connect storage USB"
         port: dut_storage
-        state: 0
+        state: 1
         wait_after_s: 1
 
       - !RelayControl
         name: "Turn on the device"
         relay: 1
         state: 1
-        wait_after_ms: 100
+        wait_after_s: 1
 
   # Flash the device. Both !DutLogControl commands are in this group with the
   # flash they bracket: the resume is the other half of the release, not a
@@ -78,6 +78,45 @@ groups:
         port: "/dev/ttyUSB0"
         timeout_s: 20
 
+  - !Group
+      name: "Clean Up"
+      commands:
+            # Power on the device and start the test
+        - !DutLogControl
+          name: "Capture The Console Again"
+          state: 1
+          wait_after_s: 1
+
+        - !DutLogExpect:
+          name: "Device Hands The Card To The Host"
+          validation: 'matches({line}, "USB Storage is now ACTIVE")'
+          timeout_s: 30
+
+        - !DutStorage:
+          name: "Mount The Card"
+          port: dut_storage
+          action: mount
+          mode: rw
+
+        - !DutStorage:
+          name: "Clear The Session Directories"
+          action: delete
+          path: "/session_*"
+        
+        - !DutStorage:
+          name: "Unmount The Card"
+          action: unmount
+
+        - !DutStorage:
+          name: "Eject The Card"
+          port: dut_storage
+          action: eject
+
+        - !DutLogExpect:
+          name: "Device Reclaims The Card On Eject"
+          validation: 'matches({line}, "Storage control returned to ESP32")'
+          timeout_s: 5
+
   # Tracker mode is what the firmware boots into when it is *not* USB powered:
   # app_main enters APP_RECORDING, which sends GNSS_MSG_START, and the GNSS FSM
   # walks GNSS_INACTIVE -> GNSS_WAITING_FIX -> GNSS_ACTIVE. The storage USB is
@@ -87,11 +126,23 @@ groups:
   - !Group
     name: "Tracker Mode"
     commands:
-      # Power on the device and start the test
-      - !DutLogControl
-        name: "Capture The Console Again"
+      - !RelayControl
+        name: "Turn off the device"
+        relay: 1
+        state: 0
+        wait_after_s: 1
+
+      - !UsbSwitch
+        name: "Disonnect storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn on the device"
+        relay: 1
         state: 1
-        wait_after_s: 20
+        wait_after_s: 1
 
       - !DutLogExpect:
         name: "Device Acquires A GNSS Fix"
@@ -124,18 +175,13 @@ groups:
         name: "Card Holds A Log Directory"
         action: list
         path: "/"
-        validation: "len(matching('session_*', {dirs})) >= 2"
+        validation: "len(matching('session_*', {dirs})) == 1"
 
       - !DutStorage:
         name: "Pull The Logs Off The Card"
         action: copy_from
         path: "/session*"
         dest: "../results/sd"
-
-      - !DutStorage:
-        name: "Clear The Session Directories"
-        action: delete
-        path: "/session_*"
 
       - !DutStorage:
         name: "Unmount The Card"
@@ -159,9 +205,20 @@ groups:
         name: "Disconnect storage USB"
         port: dut_storage
         state: 0
+        wait_after_s: 1
 
       - !RelayControl
         name: "Turn off the device"
         relay: 1
         state: 0
         wait_after_ms: 100
+
+  # The questions asked of what this run leaves behind - why a fix dropped,
+  # whether the battery curve explains a gap - live in
+  # `tracker.analysis.yml` and are answered after the run, off the bench:
+  #
+  #   python analysis/analyze.py --tasks scenarios/tracker.analysis.yml
+  #
+  # Nothing on the bench executes them: the scenario leaves logs and card
+  # copies behind, and the questions are asked of those files afterwards. See
+  # README.md.

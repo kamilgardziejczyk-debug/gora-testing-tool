@@ -338,7 +338,8 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
 
 `copy_results_from_rpi.sh` fetches a node's HTML reports, per-run
 `.tool`/`.device`/`.mqtt`/`.cli`/`.combined` logs, and any `!DutStorage`
-`copy_from` output back to this machine:
+`copy_from` output back to this machine — everything
+[`analysis/analyze.py`](#analysis) needs:
 
 ```bash
 ./copy_results_from_rpi.sh rpi1@192.168.1.42 [local_dest]
@@ -493,6 +494,53 @@ Notes:
 *   Captured device lines are also kept in memory (the last 5000) as well as written to disk, so a scenario can assert on what the DUT said with [`!DutLogExpect`](#dutlogexpect) instead of only reading the log afterwards.
 
 See [`tools/dut_logger`](tools/dut_logger/README.md) for the marker format, the standalone bench-check CLI, Docker notes, and the Python API — including reading captured device lines.
+
+### Analysis
+
+Some questions a run raises are not lines a regex could match: *why did the GNSS fix drop between sessions*, *does the battery curve explain the reset*, *is anything anomalous across this run that no check asked about*. Those are correlations across a log and the card's contents.
+
+`analysis/analyze.py` asks them. You give it a YAML file of questions and the files they are about; it uploads the files, asks one request per task, and writes the answers as markdown:
+
+```bash
+python analysis/analyze.py --tasks scenarios/tracker.analysis.yml
+python analysis/analyze.py --tasks questions.yml --files results/*.device.log
+```
+
+```yaml
+# scenarios/tracker.analysis.yml
+tasks:
+  - name: "Session gaps"
+    files:
+      - "results/*.device.log"
+      - "results/sd/session_*/*.csv"
+    questions:
+      - "Correlate GNSS fix loss with power rail dips in the session CSVs."
+      - "Does the battery curve explain any reset or gap in the recording?"
+```
+
+*   `name`: (Optional) What the answer is filed under. Defaults to `Task N`.
+*   `questions`: (Required) What to ask about these files. A single question may be written as a plain string.
+*   `files`: (Optional) Globs naming the evidence, resolved against the directory you run the command from. A task that declares none is given whatever `--files` named, so a one-off question needs no edit to the file.
+
+Options:
+
+*   `--tasks <file>` (Required): The YAML above.
+*   `--files <glob> ...`: Evidence for every task that names none of its own.
+*   `--out <file>`: Where the markdown answers go. Defaults to `analysis.md`; they are printed as well.
+*   `--dry-run`: Print what would be sent — every question, every file, and its size — and stop. Sends nothing and needs neither the SDK nor a credential, so it is the cheap way to check a glob actually names the log you meant.
+*   `--model`, `--effort`: Which model, and how hard it works (`low` … `max`, default `high`).
+*   `--max-file-mb`: Refuse any single file larger than this (default 32). A sanity cap on a capture that ran away, not a budget.
+*   `--keep-uploads`: Leave the uploaded files on the account. They are deleted once the answers are in otherwise.
+
+Notes:
+
+*   **Nothing here runs on the bench.** The scenario writes logs into `results/` and a [`!DutStorage`](#dutstorage) `copy_from` pulls the card's session directories into `results/sd/`; the questions are asked afterwards, on a machine that has a credential. A firmware regression suite must not be able to fail because an API call timed out, and the node needs no network, no SDK and no key.
+*   **A results directory can be asked anything, whenever.** The questions are not recorded during the run, so rewording one costs a re-read of files already on disk — not a re-flash and another wait for a GNSS fix. Last month's results answer a question written today.
+*   **A glob that matches nothing is a warning, not a failure** — a question about a log this run never captured is still worth asking about the logs it did. The manifest printed before anything is sent names exactly what each task got.
+*   **The files are data, not instructions.** The system prompt says so: firmware can print anything, including text shaped like a request.
+*   **Install separately**: `pip install -r analysis/requirements.txt`. Deliberately not in the root `requirements.txt`, so the node's Docker image does not carry an API SDK it never uses.
+*   **The credential comes from the environment** — `ANTHROPIC_API_KEY`, or an `ant auth login` profile. Never from a scenario or `config.json`: both are committed, and the Dockerfile bakes `scenarios/` into the image. Under CI it belongs in the analysis step's `env:`, in a job that runs after the bench job and needs no hardware.
+*   **Privacy**: this sends logs and card contents to an external API. Fine for firmware output; worth a deliberate decision if a scenario ever captures something that should not leave the bench. There is no redaction step.
 
 ### Execution Examples
 
