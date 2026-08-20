@@ -129,6 +129,27 @@ def _parse_serial_block(
     return port, baud
 
 
+def _parse_name(document: yaml.Node) -> str | None:
+    """Extract the optional top-level `name:` scalar, or None if absent.
+
+    This is the scenario's display name - what the report calls the run
+    instead of the file it was loaded from. Optional, so an unnamed scenario
+    keeps falling back to its filename; a present but unusable value (a
+    mapping, or an empty string) is warned about and ignored rather than
+    raised, since a bad label is not a reason to refuse to run the bench.
+    """
+    if not isinstance(document, yaml.MappingNode):
+        return None
+
+    name_node = _mapping_get(document, "name")
+    if name_node is None:
+        return None
+    if not isinstance(name_node, yaml.ScalarNode) or not name_node.value.strip():
+        LOGGER.warning("Ignoring invalid top-level 'name': expected a non-empty string")
+        return None
+    return name_node.value.strip()
+
+
 def _parse_dut_log(document: yaml.Node) -> DutLogConfig | None:
     """Extract the optional top-level `dut_log` mapping, or None if absent."""
     parsed = _parse_serial_block(document, "dut_log", DEFAULT_DUT_BAUD)
@@ -378,6 +399,15 @@ class Parser:
         except yaml.YAMLError:
             LOGGER.exception("YAML validation failed")
             return False
+
+    def parse_name(self) -> str | None:
+        """The scenario's `name:`, or None if it declares none.
+
+        Separate from `parse()` for the same reason as `parse_dut_log()`: the
+        name labels the whole run, not any one command.
+        """
+        _, document = self._load()
+        return _parse_name(document)
 
     def parse_dut_log(self) -> DutLogConfig | None:
         """The scenario's `dut_log:` settings, or None if it declares none.

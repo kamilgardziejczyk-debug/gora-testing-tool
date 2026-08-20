@@ -51,6 +51,8 @@
 # closes: the session outlives the group it was created in, because groups
 # have no setup or teardown of their own. See README.md.
 
+name: "RW612 Gateway - flash, BLE onboarding and MQTT uplink"
+
 dut_log:
   port: "/dev/ttyACM0"
   baud: 115200

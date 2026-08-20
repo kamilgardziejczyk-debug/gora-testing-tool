@@ -71,6 +71,7 @@ def generate_report(
     results: list[TestResult],
     output_path: Path,
     session: "LogSession | None" = None,
+    scenario_name: str | None = None,
 ) -> None:
     """Render `results` into a self-contained HTML file at `output_path`.
 
@@ -85,12 +86,17 @@ def generate_report(
     not the contents: a chatty DUT would otherwise bloat the HTML, and the
     logs are more useful greppable on disk. Only the logs the run actually
     used are listed - see `_log_file_names`.
+
+    `scenario_name`, when given, is the heading the report is titled with -
+    the scenario's own `name:` field. Left None it falls back to the
+    scenario's filename, so a scenario that names itself nothing still gets a
+    heading rather than a blank one.
     """
     env = Environment(loader=PackageLoader("reporting", "templates"), autoescape=True)
     template = env.get_template(TEMPLATE_NAME)
 
     html = template.render(
-        scenario_name=scenario_path.name,
+        scenario_name=scenario_name or scenario_path.name,
         started_at=started_at.strftime("%Y-%m-%d %H:%M:%S"),
         total_duration_s=total_duration_s,
         results=results,

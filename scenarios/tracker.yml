@@ -34,6 +34,10 @@
 # the commands inside it run in order, in place - so how they are grouped
 # cannot change what this scenario does. See README.md.
 
+# Titles the run in the HTML report and in the combined log, in place of the
+# filename. Optional - drop it and the report falls back to "tracker.yml".
+name: "Tekpadz Tracker"
+
 dut_log:
   port: "/dev/ttyUSB0"
   baud: 115200

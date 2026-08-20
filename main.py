@@ -104,22 +104,23 @@ def parse_args() -> argparse.Namespace:
 
 def load_scenario(
     test_file: str,
-) -> tuple[list[Wrapper], DutLogConfig | None, DutCliConfig | None, UsbHubConfig | None]:
-    """Validate and parse a scenario into its commands and its bench settings.
+) -> tuple[list[Wrapper], str | None, DutLogConfig | None, DutCliConfig | None, UsbHubConfig | None]:
+    """Validate and parse a scenario into its commands, name and bench settings.
 
-    All four come from one Parser so the file is read (and composed) only once.
+    All five come from one Parser so the file is read (and composed) only once.
     """
     parser = Parser(test_file)
     if not parser.validate():
         LOGGER.error("Invalid YAML file: %s", test_file)
         raise ValueError("Passed test file is not a valid YAML file")
     LOGGER.info("YAML validation successful")
+    scenario_name = parser.parse_name()
     dut_log_config = parser.parse_dut_log()
     dut_cli_config = parser.parse_dut_cli()
     usb_hub_config = parser.parse_usb_hub()
     wrappers = parser.parse()
     LOGGER.info("Scenario parsing finished, executing %d commands", len(wrappers))
-    return wrappers, dut_log_config, dut_cli_config, usb_hub_config
+    return wrappers, scenario_name, dut_log_config, dut_cli_config, usb_hub_config
 
 
 def _merge_serial_config(
@@ -473,14 +474,22 @@ def run_scenario(
     session: LogSession | None = None,
     dut_logger: DutLogger | None = None,
     switchboard: Switchboard | None = None,
+    scenario_name: str | None = None,
 ) -> None:
+    """Execute a scenario's commands, then write its report.
+
+    `scenario_name` is the scenario's own `name:` field, used to label the run
+    in the report and in the combined log; without one both fall back to the
+    scenario's filename.
+    """
     started_at = datetime.now()
     wall_start = time.monotonic()
     results: list[TestResult] = []
     failure: Exception | None = None
 
     if session is not None:
-        session.write_marker(f"SCENARIO START: {scenario_path.name} ({len(wrappers)} commands)")
+        label = scenario_name or scenario_path.name
+        session.write_marker(f"SCENARIO START: {label} ({len(wrappers)} commands)")
 
     try:
         for index, wrapper in enumerate(wrappers, start=1):
@@ -512,7 +521,15 @@ def run_scenario(
         _resume_dut_logging(dut_logger)
 
         total_duration_s = time.monotonic() - wall_start
-        generate_report(scenario_path, started_at, total_duration_s, results, report_path, session)
+        generate_report(
+            scenario_path,
+            started_at,
+            total_duration_s,
+            results,
+            report_path,
+            session,
+            scenario_name,
+        )
         LOGGER.info("Wrote test report to %s", report_path)
 
         if session is not None:
@@ -623,7 +640,7 @@ def main() -> None:
     dut_shell: DutShell | None = None
     try:
         LOGGER.info("Using test scenario file: %s", args.test)
-        wrappers, scenario_dut_log, scenario_dut_cli, scenario_usb_hub = load_scenario(args.test)
+        wrappers, scenario_name, scenario_dut_log, scenario_dut_cli, scenario_usb_hub = load_scenario(args.test)
         apply_cli_overrides(wrappers, args.port, args.firmware)
 
         # Both ports are resolved before anything is opened, so the checks that
@@ -638,7 +655,9 @@ def main() -> None:
         attach_mqtt_log_session(wrappers, session)
         dut_shell = attach_dut_cli_shell(wrappers, dut_cli, session)
         switchboard = attach_usb_switchboard(wrappers, scenario_usb_hub)
-        run_scenario(wrappers, Path(args.test), report_path, session, dut_logger, switchboard)
+        run_scenario(
+            wrappers, Path(args.test), report_path, session, dut_logger, switchboard, scenario_name
+        )
     except Exception:
         # Logged rather than left to the default excepthook: that writes the
         # traceback straight to stderr, bypassing logging entirely, which would

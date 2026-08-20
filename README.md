@@ -432,11 +432,32 @@ The tool is executed using `main.py`. You specify the path to a scenario YAML fi
 ### Test Report
 
 Every run writes an HTML report once it finishes, whether every command passed or a command failed and stopped the scenario early — the report always reflects whatever actually ran. It contains:
-*   A masthead with the scenario file name, when the run started, the elapsed time, the number of checks, and links to the log files below.
+*   A masthead with the scenario's name, when the run started, the elapsed time, the number of checks, and links to the log files below.
 *   A pass tally — `passed / total` with a progress meter, coloured green when the run is clean and red when anything failed.
 *   One row per executed command: its `name`, its tag (click to expand its exact YAML source), the `validation` expression it was checked against and what was actually observed (blank for commands with no assertion of their own, such as `!RelayControl` or `!UsbSwitch`), how long it took, and a PASS/FAIL chip (with the error message, if it failed). Failed rows are tinted so they stand out when scanning.
 *   A heading band above each [`!Group`](#group)'s rows, naming the group and carrying its own `passed / total` tally — coloured red when anything inside it failed, so a failing stage is findable without reading every row. A scenario using a plain `commands:` list has no bands at all and looks exactly as it did before.
 *   The total wall-clock time for the run, under the table.
+
+#### Naming the run (`name`)
+
+The masthead's heading comes from an optional **top-level `name:`** in the scenario — a title for the run, in place of the file it happens to live in:
+
+```yaml
+name: "ESP32 Tracker - flash, GNSS recording and SD card readout"
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+groups:
+  - !Group
+    ...
+```
+
+*   Optional. A scenario declaring no `name:` is titled with its filename, as before — `tracker.yml`.
+*   The same label is used for the combined log's `SCENARIO START` marker, so the report and the logs agree on what the run was called.
+*   Purely a label: it changes nothing about what the scenario runs, and it does not affect the report's *filename*, which stays `<scenario-file-stem>_<timestamp>.html` so repeated runs still sort by scenario and time.
+*   A present-but-unusable value (blank, or a mapping rather than a string) is warned about in the tool log and the filename is used instead — a bad title is not a reason to refuse to run the bench.
 
 The report is a single self-contained file with no external assets, and follows the light/dark preference of whatever opens it.
 
