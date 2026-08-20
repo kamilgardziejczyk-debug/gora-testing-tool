@@ -148,7 +148,17 @@ groups:
         name: "Device Acquires A GNSS Fix"
         validation: 'matches({line}, r"GNSS FIX ACQUIRED with [0-9]+ satellites")'
         timeout_s: 300
-        wait_after_s: 7200
+
+      - !Loop
+        name: "Record For Two Hours"
+        iterations: 24
+        commands:
+          - !DutLogExpect:
+            name: "Tracker Still Sampling"
+            validation: 'matches({line}, r"GNSS Sample: Timestamp=[0-9]+ s")'
+            since: command
+            timeout_s: 60
+            wait_after_s: 240
 
 
   # ... Let the device working ...
