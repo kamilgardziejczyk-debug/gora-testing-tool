@@ -3,9 +3,11 @@
 Runnable from the command line (see `ble_gatt.py`) and importable as an API,
 which is how the !BleCentral wrapper drives it.
 
-Central role only for now: scan, connect, and read/write GATT characteristics.
-A peripheral role belongs in its own module beside `central.py` and can reuse
-`loop`, `uuids` and `values` as they are.
+One module per role. `central.py` scans, connects, and reads or writes another
+device's characteristics, over bleak. `peripheral.py` runs a GATT server of its
+own and advertises it, over BlueZ's D-Bus API - bleak has no peripheral role -
+so that a DUT acting as central has something to connect to. Both share
+`loop`, `uuids` and `values`.
 """
 
 from .central import (
@@ -20,22 +22,44 @@ from .central import (
     ServiceInfo,
     ServiceNotFound,
 )
+from .peripheral import (
+    DEFAULT_ADAPTER,
+    AdvertisingDataTooLarge,
+    AdvertisingRejected,
+    BlePeripheral,
+    CharacteristicSpec,
+    ServiceSpec,
+    UnknownCharacteristic,
+    advertising_data_size,
+    advertising_uuid,
+    check_advertising_data,
+)
 from .uuids import normalize_uuid
 from .values import DEFAULT_ENCODING, ENCODINGS, encode_value, format_value
 
 __all__ = [
+    "DEFAULT_ADAPTER",
     "DEFAULT_CONNECT_TIMEOUT_S",
     "DEFAULT_ENCODING",
     "DEFAULT_SCAN_TIMEOUT_S",
     "ENCODINGS",
+    "AdvertisingDataTooLarge",
+    "AdvertisingRejected",
     "AmbiguousCharacteristic",
     "BleCentral",
+    "BlePeripheral",
     "CharacteristicInfo",
     "CharacteristicNotFound",
+    "CharacteristicSpec",
     "DeviceNotFound",
     "DiscoveredDevice",
     "ServiceInfo",
     "ServiceNotFound",
+    "ServiceSpec",
+    "UnknownCharacteristic",
+    "advertising_data_size",
+    "advertising_uuid",
+    "check_advertising_data",
     "encode_value",
     "format_value",
     "normalize_uuid",

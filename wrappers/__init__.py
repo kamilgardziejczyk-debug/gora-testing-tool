@@ -1,3 +1,4 @@
+from . import ble_hrv_registry
 from . import mqtt_registry
 from .wrapper import Wrapper
 from .program_esptool_wrapper import ProgramEsptoolWrapper
@@ -8,6 +9,9 @@ from .usb_switch_wrapper import UsbSwitchWrapper, restore_all as usb_switch_rest
 from .dut_storage_wrapper import DutStorageWrapper, restore_all as dut_storage_restore_all
 from .subghz_sim_wrapper import SubghzSimWrapper
 from .ble_central_wrapper import BleCentralWrapper
+from .ble_hrv_sim_start_wrapper import BleHrvSimStartWrapper
+from .ble_hrv_sim_set_wrapper import BleHrvSimSetWrapper
+from .ble_hrv_sim_stop_wrapper import BleHrvSimStopWrapper
 from .dut_log_expect_wrapper import DutLogExpectWrapper
 from .dut_log_control_wrapper import DutLogControlWrapper
 from .dut_cli_wrapper import DutCliWrapper

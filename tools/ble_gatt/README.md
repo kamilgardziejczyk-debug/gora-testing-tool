@@ -6,16 +6,22 @@ peripherals, connects to one, and reads or writes its characteristics.
 Usable two ways: as an interactive REPL for poking at a device by hand, and as
 a Python API that the `!BleCentral` scenario wrapper drives.
 
-**Central role only.** A peripheral role (this host *advertising* a GATT server
-for something else to connect to) is not implemented yet. When it is, it belongs
-in its own `peripheral.py` beside `central.py` and can reuse `loop.py`,
-`uuids.py` and `values.py` unchanged.
+Two roles, one module each. **Central** (`central.py`) is the above: this host
+connects to someone else's GATT server, over bleak. **Peripheral**
+(`peripheral.py`) is the reverse: this host *advertises* a GATT server of its
+own so a DUT acting as central can connect to it — used to simulate a sensor
+the DUT expects to find. bleak is central-only by design, so the peripheral
+talks to BlueZ over D-Bus instead; both roles share `loop.py`, `uuids.py` and
+`values.py`.
 
 ## Install
 
 ```bash
 pip install -r tools/ble_gatt/requirements.txt   # bleak>=3.0
 ```
+
+The peripheral role needs no extra package: it uses `dbus-fast`, which bleak
+already installs as its Linux backend.
 
 On Linux this drives BlueZ over D-Bus, so `bluetooth.service` must be running
 and the user needs permission to use the adapter. No extra setup on a normal
@@ -189,6 +195,82 @@ failure can be caught alike, as with the MQTT and sub-GHz tools),
   runs per `BleCentral`, which is what lets a connection survive across
   several synchronous calls. Drive one `BleCentral` from one thread.
 
+## Peripheral role
+
+Advertises a GATT server so a DUT acting as central can find it, connect, and
+subscribe. Simulating a sensor, in other words, rather than talking to one.
+
+```python
+from tools.ble_gatt import BlePeripheral, CharacteristicSpec, ServiceSpec
+
+heart_rate = ServiceSpec(
+    uuid="180d",
+    characteristics=(
+        CharacteristicSpec(uuid="2a37", properties=("notify",)),        # measurement
+        CharacteristicSpec(uuid="2a38", properties=("read",), initial_value=b"\x01"),
+        CharacteristicSpec(uuid="2a39", properties=("write",)),         # control point
+    ),
+)
+
+with BlePeripheral("GoraHRV_01", [heart_rate], adapter="hci0") as peripheral:
+    peripheral.start()
+    print(peripheral.describe())
+
+    if peripheral.is_notifying("2a37"):          # the DUT wrote the CCCD
+        peripheral.notify("2a37", b"\x16\x3c\xe8\x03")
+
+    print(peripheral.writes("2a39"))             # every value the DUT wrote
+```
+
+`start()` registers the GATT application and the advertisement; `stop()`
+unregisters both and leaves the peripheral restartable; `close()` (or leaving
+the `with` block) also shuts the background event loop down.
+
+### Reference
+
+**`BlePeripheral(local_name, services, adapter="hci0", timeout_s=15.0)`**
+
+| Method | Does |
+| --- | --- |
+| `start()` / `stop()` | Begin / end advertising and serving. `stop()` is restartable |
+| `close()` | `stop()` plus shutting down the event loop. Idempotent |
+| `notify(uuid, payload)` | Push a notification. Returns `False` if nobody is subscribed |
+| `is_notifying(uuid)` | Whether the central has subscribed (written the CCCD) |
+| `value(uuid)` / `set_value(uuid, payload)` | Read / set a value without notifying |
+| `writes(uuid)` / `clear_writes(uuid)` | Values the central has written, in order |
+| `describe()` | The advertised name and the whole GATT table |
+
+### Semantics worth knowing
+
+**A service UUID is advertised in its shortest form, deliberately.** BlueZ
+broadcasts whichever form it is handed and does not shorten it, while a central
+looking for a standard service reads the *16-bit* UUID list only. Advertise
+`0000180d-0000-1000-8000-00805f9b34fb` and such a central never matches — with
+no error at either end, just a device that is never found. `advertising_uuid()`
+collapses any UUID in the Bluetooth Base range to its 16-bit form, and the
+advertisement always uses it.
+
+**The advertised name has a budget, checked in the constructor.** One legacy
+advertising PDU holds 31 bytes: 3 for flags, 4 for a single 16-bit service
+UUID, and 2 + the name. A name that does not fit is not truncated — BlueZ moves
+it into the *scan response*, a separate PDU. A central that parses each
+received PDU on its own then sees the name and the service UUID in different
+packets and, if it requires both, never matches. `BlePeripheral` therefore
+raises `AdvertisingDataTooLarge` while it is being built rather than letting a
+scenario hang on a silent non-match. With one 16-bit service, the name fits up
+to **22 characters**.
+
+**Notifications go through the value.** BlueZ has no "send a notification"
+call: it watches the characteristic's `Value` property and turns a change into
+a notification. `notify()` therefore always updates the value, and returns
+`False` when no central is subscribed — so a scenario that starts streaming
+before the DUT has written the CCCD can tell.
+
+**A failed `start()` rolls all the way back.** If BlueZ accepts the GATT
+application but rejects the advertisement, the application is unregistered, the
+objects unexported and the bus dropped, so the peripheral is left exactly as
+unstarted as it was and can be retried.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -199,3 +281,6 @@ failure can be caught alike, as with the MQTT and sub-GHz tools),
 | `characteristic ... exists in more than one service` | Add a `service` to say which one you mean |
 | `write to characteristic ... failed` | Characteristic is not writable, needs pairing, or the value is the wrong length for it — check `services` output for its properties |
 | Scan finds nothing at all | `bluetooth.service` down, adapter blocked (`rfkill list`), or no permission to use it |
+| `BlueZ refused to advertise ...` | BlueZ reports no reason over D-Bus — run `journalctl -u bluetooth` on the host for the real one. Common causes: the advertising data overflows 31 bytes, the adapter is already at its advertising-instance limit, or the controller rejects it while busy with other links |
+| `AdvertisingDataTooLarge` | Shorten the advertised name (22 characters with one 16-bit service) or advertise fewer services |
+| DUT never connects to the peripheral | It may require the name *and* the service UUID in one PDU — check both are in the advertisement, not split into the scan response, with `sudo btmon` |

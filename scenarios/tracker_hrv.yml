@@ -1,0 +1,228 @@
+---
+# Drives a Tekpadz tracker against a simulated BLE heart rate sensor.
+#
+# The tracker is the *central* here: it scans, finds a peripheral advertising
+# the Heart Rate Service (0x180D) whose advertised name matches its configured
+# `ble.hr_sensor_name`, connects, discovers 0x2A37, writes the CCCD, and logs
+# every measurement to /sdcard/session_NNN/tekpadz_hr.csv - one row per RR
+# interval. This scenario supplies the sensor it is looking for.
+#
+#   python3 main.py -t scenarios/tracker_hrv.yml -p /dev/ttyUSB0
+#
+# PREREQUISITE: the card must already carry a configuration.json whose
+# ble.hr_sensor_name is exactly "GoraHRV_01". Nothing here writes it -
+# !DutStorage can read the card but not write to it - so the first group
+# *checks* it instead. Getting that wrong otherwise shows up only as a sensor
+# nobody ever connects to, which is a slow and confusing way to fail.
+#
+# The name matters twice over. The tracker compares it with strcmp against the
+# advertised name, and it must reach the tracker in the same advertising PDU as
+# the 0x180D UUID - the tracker parses each PDU on its own, so a name pushed
+# into the scan response by an over-full advertisement is never seen alongside
+# the service and never matches. "GoraHRV_01" is 10 characters, well inside the
+# 22 the tool allows for a single 16-bit service; !BleHrvSimStart rejects a
+# name that would not fit rather than letting the scenario hang.
+#
+# Unlike !BleCentral, whose connection lives for one command, the sensor is a
+# *session*: !BleHrvSimStart puts it on the air and later commands drive it
+# while the tracker records. The runner stops any session still running when
+# the scenario ends, so a failure part-way still frees the adapter.
+
+name: "Tekpadz HRV Tracking"
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+usb_hub:
+  ports:
+    dut_storage: 1
+
+
+groups:
+  # The tracker will only connect to a sensor whose name it was configured
+  # with, so that configuration is checked before anything is put on the air.
+  - !Group
+    name: "Confirm The Tracker Is Configured For This Sensor"
+    commands:
+      - !UsbSwitch
+        name: "Connect Storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+
+      - !DutStorage:
+        name: "Card Names The Sensor This Scenario Advertises"
+        action: read
+        path: "/configuration.json"
+        validation: '"GoraHRV_01" in {content}'
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
+
+      - !DutStorage:
+        name: "Give The Card Back To The Tracker"
+        port: dut_storage
+        action: eject
+
+      - !UsbSwitch
+        name: "Disconnect Storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+  - !Group
+    name: "Bring The Sensor Up"
+    commands:
+      # 60 bpm with 25 ms of beat-to-beat jitter: a resting pulse with real
+      # variability, which is the quantity under test. seed makes the beat
+      # sequence identical from run to run, so a failure is reproducible.
+      - !BleHrvSimStart:
+        name: "Advertise A Heart Rate Sensor"
+        session: hrv
+        device: "GoraHRV_01"
+        bpm: 60
+        jitter_ms: 25
+        interval_s: 1
+        seed: 1
+
+      - !RelayControl
+        name: "Turn On The Tracker"
+        relay: 1
+        state: 1
+        wait_after_s: 1
+
+      - !DutLogExpect:
+        name: "Tracker Finds The Sensor"
+        validation: 'matches({line}, r"Matching HR sensor found! Name: GoraHRV_01")'
+        timeout_s: 60
+
+      - !DutLogExpect:
+        name: "Tracker Discovers The Heart Rate Service"
+        validation: 'matches({line}, r"Found HR Characteristic")'
+        timeout_s: 30
+
+  - !Group
+    name: "Record A Session"
+    commands:
+      # This is the sync point for everything after it. The line cannot appear
+      # unless the tracker wrote the CCCD, so it proves the subscription - and
+      # proves the tracker parsed what arrived, which the sensor's own view of
+      # its subscription would not. It is also where the counters
+      # !BleHrvSimStop asserts on start from zero: beats the sensor generated
+      # before this were discarded, not sent.
+      #
+      # timeout_s covers the whole scan, connect, discover and subscribe
+      # sequence, so it is generous rather than tight.
+      - !DutLogExpect:
+        name: "Tracker Logs A Measurement With An RR Interval"
+        validation: 'matches({line}, r"HR: \d+ bpm .* RR-Count: [1-9]")'
+        timeout_s: 60
+
+      # A pulse the tracker cannot have inferred from anything else, so its
+      # appearance in the log proves the value came from this sensor.
+      - !BleHrvSimSet:
+        name: "Raise The Pulse"
+        session: hrv
+        actions:
+          - bpm: 120
+            wait_after_ms: 3000
+
+      # wait_after_s leaves the sensor streaming for a minute once the new
+      # pulse is confirmed, at the deterministic 1 Hz cadence interval_s sets.
+      # A wait rather than an assertion on the sensor's own counters: what it
+      # managed to send is checked once, at !BleHrvSimStop, against what the
+      # tracker actually recorded.
+      - !DutLogExpect:
+        name: "Tracker Reports The New Pulse"
+        validation: 'matches({line}, r"HR: 1[12]\d bpm")'
+        timeout_s: 20
+        wait_after_s: 60
+
+  - !Group
+    name: "Interrupt The Stream"
+    commands:
+      # A sensor that stays connected but goes quiet: a strap loosening, or a
+      # link with no airtime. The tracker should notice the gap rather than
+      # carrying the last value forward.
+      - !BleHrvSimSet:
+        name: "Sensor Goes Quiet For Ten Seconds"
+        session: hrv
+        actions:
+          - contact: "no"
+          - stall: 10
+            wait_after_ms: 12000
+          - contact: "yes"
+
+      - !DutLogExpect:
+        name: "Tracker Resumes After The Gap"
+        validation: 'matches({line}, r"HR: \d+ bpm .* Contact: yes")'
+        timeout_s: 30
+
+  - !Group
+    name: "Overflow The Tracker's RR Buffer"
+    commands:
+      # KNOWN DEFECT, pinned deliberately: the firmware parses at most 8 RR
+      # intervals per notification (tekpadz_ble.c) and copies at most 32 bytes
+      # of it, while its own ATT MTU is 256. Twelve intervals are sent here;
+      # the tracker reports 8 and silently drops 4. This asserts the loss so it
+      # stays visible in the report - when the firmware is fixed to read them
+      # all, this expectation is what should be updated to RR-Count: 12.
+      - !BleHrvSimSet:
+        name: "Send Twelve RR Intervals In One Frame"
+        session: hrv
+        actions:
+          - burst: 12
+            wait_after_ms: 2000
+
+      - !DutLogExpect:
+        name: "Tracker Keeps Only Eight Of The Twelve"
+        validation: 'matches({line}, r"RR-Count: 8")'
+        timeout_s: 20
+
+  - !Group
+    name: "Stop And Check What Was Recorded"
+    commands:
+      # Read before the sensor stops: {subscribed} is false the moment it
+      # leaves the air. The totals here are what the card should hold - one
+      # CSV row per RR interval - so the report shows both numbers side by
+      # side even though no tag can compare them to each other directly.
+      - !BleHrvSimStop:
+        name: "Stop The Sensor"
+        session: hrv
+        validation: "{subscribed} and {notifications} >= 60 and {rr_intervals} >= 60"
+
+      - !UsbSwitch
+        name: "Connect Storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+
+      - !DutStorage:
+        name: "Card Holds A Heart Rate Log"
+        action: list
+        path: "/"
+        validation: "len(matching('session_*', {dirs})) >= 1"
+
+      - !DutStorage:
+        name: "Copy The Heart Rate Log Off The Card"
+        action: copy_from
+        path: "/"
+        dest: "../results"
+        validation: "len(matching('*tekpadz_hr.csv', {copied})) >= 1"
+
+      - !DutStorage:
+        name: "Give The Card Back"
+        port: dut_storage
+        action: eject

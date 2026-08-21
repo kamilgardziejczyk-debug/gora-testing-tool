@@ -130,6 +130,15 @@ groups:
   - !Group
     name: "Tracker Mode"
     commands:
+      - !BleHrvSimStart:
+        name: "Advertise A Heart Rate Sensor"
+        session: hrv
+        device: "GoraHRV_01"
+        bpm: 60
+        jitter_ms: 25
+        interval_s: 1
+        seed: 1
+
       - !RelayControl
         name: "Turn off the device"
         relay: 1
@@ -149,6 +158,16 @@ groups:
         wait_after_s: 1
 
       - !DutLogExpect:
+        name: "Tracker Finds The Sensor"
+        validation: 'matches({line}, r"Matching HR sensor found! Name: GoraHRV_01")'
+        timeout_s: 60
+
+      - !DutLogExpect:
+        name: "Tracker Discovers The Heart Rate Service"
+        validation: 'matches({line}, r"Found HR Characteristic")'
+        timeout_s: 30
+
+      - !DutLogExpect:
         name: "Device Acquires A GNSS Fix"
         validation: 'matches({line}, r"GNSS FIX ACQUIRED with [0-9]+ satellites")'
         timeout_s: 300
@@ -164,7 +183,10 @@ groups:
             timeout_s: 60
             wait_after_s: 240
 
-
+      - !BleHrvSimStop:
+        name: "Stop The Sensor"
+        session: hrv
+        validation: "{subscribed} and {notifications} >= 60 and {rr_intervals} >= 60"
   # ... Let the device working ...
 
   # Mount the SD Card and read data files

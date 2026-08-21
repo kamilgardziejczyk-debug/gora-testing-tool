@@ -3,8 +3,8 @@
 Sync API over bleak (which is async-only) - see `loop.py` for why the event
 loop lives on a background thread.
 
-Central role only. A peripheral role, if added, belongs in its own module
-beside this one and can reuse `loop`, `uuids` and `values` unchanged.
+Central role only. The peripheral role lives in `peripheral.py` beside this
+one, sharing `loop`, `uuids` and `values`.
 """
 
 from __future__ import annotations

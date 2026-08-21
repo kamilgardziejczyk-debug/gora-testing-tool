@@ -22,6 +22,7 @@ from tools.dut_logger import (
 from tools.usb_hub import Switchboard, UsbHub
 from wrappers import (
     Wrapper,
+    ble_hrv_registry,
     dut_storage_restore_all,
     mqtt_registry,
     relay_cleanup_all,
@@ -511,6 +512,7 @@ def run_scenario(
         # broker connections closed, relays released, USB ports powered, and a
         # report written, or the client id stays taken by an orphan, relays stay
         # energized, the next run finds a dark DUT, and this run leaves no record.
+        ble_hrv_registry.close_all()
         mqtt_registry.close_all()
         relay_cleanup_all()
         # Before the USB ports are restored: an unmount must happen while the

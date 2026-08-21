@@ -1,6 +1,6 @@
 # Gora Testing Tool
 
-An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, control relays (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, listen to messages published to AWS IoT Core, drive a device's Zephyr shell over UART, mount and inspect a device's SD card exposed over USB mass storage, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
+An automated, YAML-driven test execution and hardware control tool designed to parse test scenarios, control relays (e.g. on a Raspberry Pi), manipulate USB switches, run terminal commands, simulate sub-GHz sensors, interact with Bluetooth LE devices over GATT, simulate a Bluetooth LE heart rate sensor for a device to connect to, listen to messages published to AWS IoT Core, drive a device's Zephyr shell over UART, mount and inspect a device's SD card exposed over USB mass storage, and flash device microcontrollers using both `esptool` and SEGGER `J-Link`.
 
 ---
 
@@ -107,6 +107,12 @@ docker run --rm \
     `--net=host` as a fallback — it should not normally be required.
 *   `adapter:` in the YAML (e.g. `hci0`) still refers to the host's adapter
     name, unchanged from running outside Docker.
+*   The same D-Bus mount also covers `tools/ble_gatt`'s **peripheral** role
+    (this node advertising a simulated GATT server for a DUT to connect to),
+    which needs no extra package either — it uses `dbus-fast`, which bleak
+    already installs. It does need the adapter to have a free advertising
+    instance, so a node that both advertises a simulated sensor and scans as
+    a central at the same time is worth giving a second USB BLE dongle.
 *   The adapter must be **powered on** on the host, or `!BleCentral` fails
     fast with `No powered Bluetooth adapters found` before it ever scans.
     `deploy_docker_to_rpis.sh` provisions each node so this survives reboots
@@ -911,6 +917,97 @@ Which reading is meaningful belongs to the characteristic, so the expression nam
 A bad UUID, an unknown encoding on a `write`, or a malformed `validation` expression **fails while parsing the file**, before the radio is touched — so a malformed scenario cannot leave a device half-configured. A missing device, a service or characteristic the peripheral doesn't expose, a rejected write, or a `read`/`notify` assertion that isn't satisfied fails when the command runs — after exhausting `attempts`, if given one greater than `1`.
 
 > Note: only the central role exists. A peripheral role (this host advertising its own GATT server) is not implemented yet.
+
+### `!BleHrvSimStart` / `!BleHrvSimSet` / `!BleHrvSimStop`
+
+Simulates a Bluetooth LE **heart rate sensor** for a DUT to connect to — the mirror image of `!BleCentral`. Where that tag connects *to* a peripheral, these advertise one: a standard Heart Rate Service (`0x180D`) streaming measurements with the RR intervals that carry the HRV, plus Battery and Device Information. Wraps `tools/ble_gatt`'s peripheral role — see [its README](tools/ble_gatt/README.md) for the standalone REPL (`--peripheral`) and the advertising rules.
+
+Unlike `!BleCentral`, this is a **session**, in the same shape as `!MqttSubscribe`/`!MqttDisconnect`: the sensor must keep advertising and streaming *while other commands run*, because a DUT records from it across a whole test. `!BleHrvSimStart` puts it on the air under a `session` name; `!BleHrvSimSet` drives it; `!BleHrvSimStop` ends it. The runner stops any session still running when the scenario ends, so a scenario that fails part-way still frees the adapter.
+
+**Nothing is streamed until a central subscribes.** Beats generated with nobody listening would be counted but never sent, which would make the totals `!BleHrvSimStop` asserts on meaningless.
+
+A scenario waits for that moment **on the DUT's own console**, not here: the first measurement the DUT logs cannot appear unless it wrote the CCCD, so a `!DutLogExpect` on that line proves the subscription *and* proves the DUT parsed what arrived — which the sensor's own view of its subscription does not. Give it a `timeout_s` generous enough to cover the whole scan, connect, discover and subscribe sequence. The rule this follows is worth keeping in mind generally: **assert on the DUT, not on the simulator.** What the sensor sent is evidence about the sensor; only the DUT's log and its card are evidence about the thing under test.
+
+```yaml
+  - !BleHrvSimStart:
+    name: "Advertise A Heart Rate Sensor"
+    session: hrv
+    device: "GoraHRV_01"
+    bpm: 60
+    jitter_ms: 25
+    seed: 1
+
+  # Proof the tracker subscribed - and parsed what arrived.
+  - !DutLogExpect:
+    name: "Tracker Logs A Measurement"
+    validation: 'matches({line}, r"HR: \d+ bpm")'
+    timeout_s: 60
+
+  - !BleHrvSimSet:
+    name: "Raise The Pulse, Then Go Quiet"
+    session: hrv
+    actions:
+      - bpm: 120
+        wait_after_ms: 3000
+      - stall: 10
+
+  - !BleHrvSimStop:
+    name: "Stop The Sensor"
+    session: hrv
+    validation: "{subscribed} and {rr_intervals} >= 60"
+```
+
+#### `!BleHrvSimStart`
+
+*   `name`: (Optional) Descriptive log name.
+*   `session`: (Required) Name later `!BleHrvSim*` commands use to reach this sensor.
+*   `device`: (Required) The name the sensor **advertises**. The DUT must be configured to look for exactly this name — the tracker compares it with `strcmp`. At most **22 characters**: one advertising PDU holds 31 bytes and the name must share it with the `0x180D` service UUID. A longer name is rejected when the scenario loads, because the alternative is worse than an error — BlueZ would move it into the scan response, and a DUT parsing each PDU separately would never see the name and the service together, so it would simply never connect, with nothing logged at either end.
+*   `bpm`: (Optional) Starting pulse, 20–250. Defaults to `60`.
+*   `jitter_ms`: (Optional) Beat-to-beat variability — this *is* the HRV. Defaults to `25`. Set `0` for a metronome, which is the way to prove a consumer is reading real variability rather than deriving it from the pulse.
+*   `drift_bpm_per_min`: (Optional) Pulse change per minute, e.g. `10` to ramp up. Defaults to `0`.
+*   `interval_s`: (Optional) Seconds between notifications. Defaults to `1`.
+*   `seed`: (Optional) Seeds the beat generator so a run replays exactly. Without it every run differs, which makes a failure hard to reproduce.
+*   `battery_pct`: (Optional) Initial battery level, 0–100. Defaults to `100`.
+*   `location`: (Optional) Body sensor location: `chest` (default), `wrist`, `finger`, `hand`, `ear-lobe`, `foot`, `other`.
+*   `contact`: (Optional) `yes` (default), `no`, or `none`. Three states, not a boolean: `none` means the sensor does not report contact at all, which is a different thing from reporting that it has none.
+*   `adapter`: (Optional) Bluetooth adapter, e.g. `hci0`. Defaults to `hci0`. A node that both advertises a sensor and scans as a central wants a second dongle — see the Docker BLE notes above.
+
+#### `!BleHrvSimSet`
+
+*   `session`: (Required) A session opened by `!BleHrvSimStart`.
+*   `actions`: (Required) A non-empty list, run in order. Any action takes `wait_after_ms` to pause before the next.
+
+    | Action | Does |
+    | --- | --- |
+    | `bpm: <n>` | Change the pulse from the next beat on |
+    | `contact: <yes\|no\|none>` | Skin contact state |
+    | `battery: <percent>` | Set and notify the battery level |
+    | `energy: <kJ\|off>` | Report energy expended in every frame, or stop. `off` removes the field; `0` reports zero, which is a different frame |
+    | `burst: <count>` | Send that many RR intervals in one frame, to exceed what the central budgeted for |
+    | `stall: <seconds>` | Stay connected but send nothing. Returns at once, so the gap runs while later commands do |
+    | `resume` | End a stall early |
+    | `bounce` | Drop off the air and come back, forcing the central to reconnect |
+
+    `resume` and `bounce` take no argument, so they are written as bare entries (`- resume`).
+
+#### `!BleHrvSimStop`
+
+*   `session`: (Required) A session opened by `!BleHrvSimStart`.
+*   `validation`: (Optional) A [validation expression](#validation-expressions) over the variables below, evaluated once. The counters are read *before* the sensor leaves the air — `{subscribed}` is false the moment it stops advertising, so asking afterwards would report that no central was ever there. The sensor is then stopped either way, including when the assertion fails, so a failed check never leaves the adapter advertising. Without a `validation` this just stops the sensor.
+
+| Variable | Type | Holds |
+| --- | --- | --- |
+| `{subscribed}` | `bool` | whether a central is subscribed to measurements right now |
+| `{notifications}` | `int` | measurements actually sent — not generated |
+| `{rr_intervals}` | `int` | RR intervals actually sent |
+| `{bpm}` | `int` | the sensor's current pulse |
+| `{writes}` | `int` | writes the central made to the control point (`0x2A39`) |
+
+`{rr_intervals}` is the one worth asserting on: a DUT logging one row per RR interval should hold exactly this many rows. No tag can compare the two directly — there is no variable passing between commands — but both numbers land in the report, so the comparison is one glance rather than a guess.
+
+Asserting on `{bpm}` is pointless: a scenario that just set it is asserting on itself.
+
+See `scenarios/tracker_hrv.yml` for the whole flow, including the fault cases.
 
 ### `!MqttSubscribe`
 Opens a connection to an MQTT broker (built for AWS IoT Core) over mutual TLS and starts buffering messages from one or more topics. Wraps `tools/mqtt_listener` — see [its README](tools/mqtt_listener/README.md) for the standalone tool, certificate setup, and troubleshooting.

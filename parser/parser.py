@@ -8,6 +8,9 @@ from tools.dut_cli import DEFAULT_BAUD as DEFAULT_CLI_BAUD
 from tools.dut_logger import DEFAULT_BAUD as DEFAULT_DUT_BAUD
 from wrappers import (
     BleCentralWrapper,
+    BleHrvSimSetWrapper,
+    BleHrvSimStartWrapper,
+    BleHrvSimStopWrapper,
     DutCliWrapper,
     DutLogControlWrapper,
     DutLogExpectWrapper,
@@ -35,6 +38,9 @@ WRAPPER_BY_TAG = {
     "UsbSwitch": UsbSwitchWrapper,
     "SubghzSim": SubghzSimWrapper,
     "BleCentral": BleCentralWrapper,
+    "BleHrvSimStart": BleHrvSimStartWrapper,
+    "BleHrvSimSet": BleHrvSimSetWrapper,
+    "BleHrvSimStop": BleHrvSimStopWrapper,
     "MqttSubscribe": MqttSubscribeWrapper,
     "MqttExpect": MqttExpectWrapper,
     "MqttDisconnect": MqttDisconnectWrapper,
