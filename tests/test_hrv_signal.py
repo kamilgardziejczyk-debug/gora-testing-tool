@@ -22,6 +22,15 @@ from tools.ble_gatt.peripheral import (  # noqa: E402
     advertising_uuid,
     check_advertising_data,
 )
+from tools.ble_gatt.peripheral import build_advertising_data  # noqa: E402
+from tools.ble_gatt.mgmt import (  # noqa: E402
+    MGMT_OP_ADD_ADVERTISING,
+    MGMT_OP_READ_ADV_FEATURES,
+    MGMT_OP_REMOVE_ADVERTISING,
+    AdvertisingFeatures,
+    MgmtError,
+    adapter_index,
+)
 from tools.ble_gatt.profiles.heart_rate import rr_to_ms  # noqa: E402
 
 
@@ -121,6 +130,77 @@ class AdvertisingBudgetTests(unittest.TestCase):
         with_two = advertising_data_size("", ["180d", "180f"])
         self.assertEqual(with_two - with_one, 2)
         self.assertLessEqual(with_two, AD_MAX_BYTES)
+
+
+class AdvertisingPayloadTests(unittest.TestCase):
+    """The exact bytes broadcast, which a scanner has confirmed on hardware."""
+
+    def test_payload_matches_what_a_scanner_reported(self):
+        """Flags, the 16-bit UUID list, then the complete local name."""
+        self.assertEqual(
+            build_advertising_data("GoraHRV_01", ["180d"]).hex(),
+            "02010603030d180b09" + b"GoraHRV_01".hex(),
+        )
+
+    def test_the_name_and_the_uuid_share_one_payload(self):
+        """The whole point: a central needing both in one PDU must see both."""
+        data = build_advertising_data("GoraHRV_01", ["180d"])
+        self.assertIn(bytes([0x03, 0x03, 0x0D, 0x18]), data)          # UUID list
+        self.assertIn(bytes([0x0B, 0x09]) + b"GoraHRV_01", data)      # complete name
+
+    def test_flags_come_first(self):
+        """A Flags structure is expected at the head of the payload."""
+        self.assertEqual(build_advertising_data("X", ["180d"])[:3], bytes([0x02, 0x01, 0x06]))
+
+    def test_every_structure_declares_its_own_length(self):
+        """A malformed length byte makes the kernel reject the whole payload."""
+        data = build_advertising_data("GoraHRV_01", ["180d", "180f"])
+        index = 0
+        while index < len(data):
+            length = data[index]
+            self.assertGreater(length, 0)
+            index += length + 1
+        self.assertEqual(index, len(data), "structures must exactly fill the payload")
+
+    def test_a_vendor_uuid_is_carried_in_full_little_endian(self):
+        vendor = "0000ffe0-1234-1000-8000-00805f9b34fb"
+        data = build_advertising_data("", [vendor])
+        self.assertIn(bytes.fromhex(vendor.replace("-", ""))[::-1], data)
+
+    def test_size_is_measured_from_the_real_payload(self):
+        for name in ("", "X", "GoraHRV_01", "X" * 22):
+            self.assertEqual(
+                advertising_data_size(name, ["180d"]), len(build_advertising_data(name, ["180d"]))
+            )
+
+
+class MgmtTests(unittest.TestCase):
+    """The management client, minus anything needing an adapter."""
+
+    def test_opcodes_are_the_ones_seen_on_the_wire(self):
+        """Read off btmgmt with btmon; the advertising block is not where the
+        ordering in mgmt-api.txt suggests, so these are pinned."""
+        self.assertEqual(MGMT_OP_READ_ADV_FEATURES, 0x003D)
+        self.assertEqual(MGMT_OP_ADD_ADVERTISING, 0x003E)
+        self.assertEqual(MGMT_OP_REMOVE_ADVERTISING, 0x003F)
+
+    def test_adapter_name_maps_to_an_index(self):
+        self.assertEqual(adapter_index("hci0"), 0)
+        self.assertEqual(adapter_index(" HCI11 "), 11)
+
+    def test_a_name_that_is_not_an_adapter_is_rejected(self):
+        for value in ("hci", "eth0", "0", "hcix"):
+            with self.assertRaisesRegex(ValueError, "not a Bluetooth adapter name"):
+                adapter_index(value)
+
+    def test_the_lowest_free_advertising_slot_is_chosen(self):
+        self.assertEqual(AdvertisingFeatures(0, 31, 31, 5, ()).free_instance(), 1)
+        self.assertEqual(AdvertisingFeatures(0, 31, 31, 5, (1, 3)).free_instance(), 2)
+
+    def test_exhausted_slots_say_how_to_reclaim_them(self):
+        """A leaked slot looks exactly like a fresh failure unless it is named."""
+        with self.assertRaisesRegex(MgmtError, "restart"):
+            AdvertisingFeatures(0, 31, 31, 2, (1, 2)).free_instance()
 
 
 class PeripheralConstructionTests(unittest.TestCase):

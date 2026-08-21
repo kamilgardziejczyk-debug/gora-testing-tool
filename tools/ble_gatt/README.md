@@ -242,23 +242,36 @@ the `with` block) also shuts the background event loop down.
 
 ### Semantics worth knowing
 
-**A service UUID is advertised in its shortest form, deliberately.** BlueZ
-broadcasts whichever form it is handed and does not shorten it, while a central
-looking for a standard service reads the *16-bit* UUID list only. Advertise
-`0000180d-0000-1000-8000-00805f9b34fb` and such a central never matches — with
-no error at either end, just a device that is never found. `advertising_uuid()`
-collapses any UUID in the Bluetooth Base range to its 16-bit form, and the
-advertisement always uses it.
+**The advertisement does not go through BlueZ.** `LEAdvertisingManager1`
+rejected every advertisement on every host tested, including BlueZ's own
+`bluetoothctl` on a freshly restarted adapter — two BlueZ versions, two kernels,
+two controllers, always `Invalid Parameters`. The kernel accepts the same
+advertisement over its management interface, so `mgmt.py` sends it there
+directly. The GATT server still belongs to `bluetoothd`, over D-Bus, which
+works fine; only the advertisement is built and sent by this tool.
 
-**The advertised name has a budget, checked in the constructor.** One legacy
+That turned out to be necessary for a second reason. BlueZ decides for itself
+whether the local name travels in the advertisement or the scan response, and
+it puts it in the **scan response** — a separate PDU. A central that will only
+match a peripheral advertising its name and a service UUID *together* therefore
+never matches it, with no error at either end. Building the payload here puts
+both in one PDU, which is verifiable: `build_advertising_data("GoraHRV_01",
+["180d"])` is exactly the 19 bytes a scanner reports as one advertisement.
+
+**A service UUID is advertised in its shortest form, deliberately.** A central
+looking for a standard service reads the *16-bit* UUID list only, so
+advertising `0000180d-0000-1000-8000-00805f9b34fb` makes the peripheral
+invisible to it. `advertising_uuid()` collapses any UUID in the Bluetooth Base
+range to its 16-bit form, and it costs 4 bytes of the budget instead of 18.
+
+**The advertised name has a budget, checked in the constructor.** One
 advertising PDU holds 31 bytes: 3 for flags, 4 for a single 16-bit service
-UUID, and 2 + the name. A name that does not fit is not truncated — BlueZ moves
-it into the *scan response*, a separate PDU. A central that parses each
-received PDU on its own then sees the name and the service UUID in different
-packets and, if it requires both, never matches. `BlePeripheral` therefore
-raises `AdvertisingDataTooLarge` while it is being built rather than letting a
-scenario hang on a silent non-match. With one 16-bit service, the name fits up
-to **22 characters**.
+UUID, and 2 + the name. `BlePeripheral` raises `AdvertisingDataTooLarge` while
+it is being built rather than at start, and `advertising_data_size()` measures
+the real payload rather than predicting it, so the check can never disagree
+with what is broadcast. With one 16-bit service the name fits up to **22
+characters**. The adapter's own limit is checked too, once a socket to it is
+open, since it can be lower than 31.
 
 **Notifications go through the value.** BlueZ has no "send a notification"
 call: it watches the characteristic's `Value` property and turns a change into
@@ -266,10 +279,15 @@ a notification. `notify()` therefore always updates the value, and returns
 `False` when no central is subscribed — so a scenario that starts streaming
 before the DUT has written the CCCD can tell.
 
-**A failed `start()` rolls all the way back.** If BlueZ accepts the GATT
-application but rejects the advertisement, the application is unregistered, the
-objects unexported and the bus dropped, so the peripheral is left exactly as
-unstarted as it was and can be retried.
+**A failed `start()` rolls all the way back.** The GATT application is
+registered first and the advertisement second; if the advertisement fails the
+application is unregistered, the objects unexported and the bus dropped, so the
+peripheral is left exactly as unstarted as it was and can be retried. This
+matters more than it sounds: an advertising slot is a finite adapter resource,
+and a client that half-registers one leaks it. Five failed starts can exhaust
+an adapter, after which nothing on the host can advertise until `systemctl
+restart bluetooth`. `free_instance()` reports that state by name rather than
+letting it look like a fresh failure.
 
 ## Troubleshooting
 
@@ -281,6 +299,8 @@ unstarted as it was and can be retried.
 | `characteristic ... exists in more than one service` | Add a `service` to say which one you mean |
 | `write to characteristic ... failed` | Characteristic is not writable, needs pairing, or the value is the wrong length for it — check `services` output for its properties |
 | Scan finds nothing at all | `bluetooth.service` down, adapter blocked (`rfkill list`), or no permission to use it |
-| `BlueZ refused to advertise ...` | BlueZ reports no reason over D-Bus — run `journalctl -u bluetooth` on the host for the real one. Common causes: the advertising data overflows 31 bytes, the adapter is already at its advertising-instance limit, or the controller rejects it while busy with other links |
+| `the Bluetooth management socket is not available in this network namespace` | The container is on a bridge network. Bluetooth sockets are namespace-scoped: run it with `--network host` (the deploy script now does) |
+| `not permitted to open the Bluetooth management socket` | Needs `CAP_NET_ADMIN` — run as root or add `--cap-add=NET_ADMIN` |
+| `all N advertising slot(s) on this adapter are in use` | Another program is advertising, or a previous one leaked a slot. `systemctl restart bluetooth` on the host reclaims them |
 | `AdvertisingDataTooLarge` | Shorten the advertised name (22 characters with one 16-bit service) or advertise fewer services |
 | DUT never connects to the peripheral | It may require the name *and* the service UUID in one PDU — check both are in the advertisement, not split into the scan response, with `sudo btmon` |

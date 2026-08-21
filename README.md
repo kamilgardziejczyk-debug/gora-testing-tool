@@ -107,12 +107,19 @@ docker run --rm \
     `--net=host` as a fallback — it should not normally be required.
 *   `adapter:` in the YAML (e.g. `hci0`) still refers to the host's adapter
     name, unchanged from running outside Docker.
-*   The same D-Bus mount also covers `tools/ble_gatt`'s **peripheral** role
-    (this node advertising a simulated GATT server for a DUT to connect to),
-    which needs no extra package either — it uses `dbus-fast`, which bleak
-    already installs. It does need the adapter to have a free advertising
-    instance, so a node that both advertises a simulated sensor and scans as
-    a central at the same time is worth giving a second USB BLE dongle.
+*   The **peripheral** role (`!BleHrvSim*`, this node advertising a simulated
+    sensor for a DUT to connect to) needs one thing more: **`--network host`**.
+    Its GATT server uses the same D-Bus socket, but its advertisement goes
+    straight to the kernel over a Bluetooth management socket, and Bluetooth
+    sockets are scoped to a network namespace — from the default bridge network
+    the adapter is not merely unusable but invisible, and the tag fails with
+    `the Bluetooth management socket is not available in this network
+    namespace`. `deploy_docker_to_rpis.sh` passes `--network host` for this
+    reason; a hand-rolled `docker run` needs it too. (BlueZ is deliberately not
+    asked to advertise — see [`tools/ble_gatt/README.md`](tools/ble_gatt/README.md).)
+*   Advertising also needs a free advertising slot on the adapter, so a node
+    that both advertises a simulated sensor and scans as a central at the same
+    time is worth giving a second USB BLE dongle.
 *   The adapter must be **powered on** on the host, or `!BleCentral` fails
     fast with `No powered Bluetooth adapters found` before it ever scans.
     `deploy_docker_to_rpis.sh` provisions each node so this survives reboots

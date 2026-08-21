@@ -273,6 +273,7 @@ EOF
         docker rm -f '${CONTAINER_NAME}' >/dev/null 2>&1 || true
         docker run -d --name '${CONTAINER_NAME}' --restart unless-stopped \
             --env-file '${ENV_FILE_REMOTE}' \
+            --network host \
             --device /dev/gpiomem \
             -v /var/run/dbus:/var/run/dbus \
             -v '${REMOTE_DIR}/firmware:/app/firmware:ro' \
@@ -308,4 +309,5 @@ done
 warn "scenarios/ is baked into the image - a scenario edit needs a rebuild + redeploy, not just a file copy."
 warn "GH_PAT is written into ${CONTAINER_NAME}'s env on each node and visible via 'docker inspect' there - use a PAT scoped to just this repo's runner administration."
 warn "Node-specific hardware access (e.g. --device /dev/gpiomem, /dev/ttyUSB0) is not added automatically - pass it via EXTRA_DOCKER_RUN_ARGS, matching the single-node instructions in README.md."
+info "Containers run with --network host: Bluetooth sockets are scoped to a network namespace, so the !BleHrvSim* tags cannot reach the adapter from the default bridge network. !BleCentral works either way, since it only talks to bluetoothd over D-Bus."
 warn "!UsbSwitch (MEGA4 hub) needs raw USB access: add EXTRA_DOCKER_RUN_ARGS='--privileged -v /dev/bus/usb:/dev/bus/usb' on any node with a hub, or every port change is only simulated."

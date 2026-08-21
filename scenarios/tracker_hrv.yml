@@ -7,11 +7,11 @@
 # every measurement to /sdcard/session_NNN/tekpadz_hr.csv - one row per RR
 # interval. This scenario supplies the sensor it is looking for.
 #
-#   python3 main.py -t scenarios/tracker_hrv.yml -p /dev/ttyUSB0
+#   python3 main.py -t scenarios/tracker_hrv.yml
 #
 # PREREQUISITE: the card must already carry a configuration.json whose
 # ble.hr_sensor_name is exactly "GoraHRV_01". Nothing here writes it -
-# !DutStorage can read the card but not write to it - so the first group
+# !DutStorage can read the card but not write to it - so the second group
 # *checks* it instead. Getting that wrong otherwise shows up only as a sensor
 # nobody ever connects to, which is a slow and confusing way to fail.
 #
@@ -22,6 +22,14 @@
 # the service and never matches. "GoraHRV_01" is 10 characters, well inside the
 # 22 the tool allows for a single 16-bit service; !BleHrvSimStart rejects a
 # name that would not fit rather than letting the scenario hang.
+#
+# ORDER MATTERS, and not in an obvious way. The tracker only starts BLE when
+# its own SD card is mounted (APP_MSG_SD_CARD_MOUNTED while APP_RECORDING),
+# and handing the card to the host pushes it out of recording entirely. So the
+# config check has to happen *first* and the card has to be given back before
+# the tracker will look for any sensor at all. The sensor goes on the air
+# before the tracker is even powered, so it is already advertising by the time
+# BLE comes up and there is no race to lose.
 #
 # Unlike !BleCentral, whose connection lives for one command, the sensor is a
 # *session*: !BleHrvSimStart puts it on the air and later commands drive it
@@ -40,17 +48,54 @@ usb_hub:
 
 
 groups:
-  # The tracker will only connect to a sensor whose name it was configured
-  # with, so that configuration is checked before anything is put on the air.
   - !Group
-    name: "Confirm The Tracker Is Configured For This Sensor"
+    name: "Put The Sensor On The Air And Boot The Tracker"
     commands:
+      # First, so the sensor is already advertising when the tracker's BLE
+      # starts. 60 bpm with 25 ms of beat-to-beat jitter: a resting pulse with
+      # real variability, which is the quantity under test. seed makes the beat
+      # sequence identical from run to run, so a failure is reproducible.
+      # Nothing is streamed until the tracker subscribes, so being early costs
+      # nothing.
+      - !BleHrvSimStart:
+        name: "Advertise A Heart Rate Sensor"
+        session: hrv
+        device: "GoraHRV_01"
+        bpm: 60
+        jitter_ms: 25
+        interval_s: 1
+        seed: 1
+
+      # Storage USB is connected before the tracker is powered, so it comes up
+      # already offering its card to the host - which is what the config check
+      # below needs, and what pushes it out of recording until the card is
+      # returned.
       - !UsbSwitch
         name: "Connect Storage USB"
         port: dut_storage
         state: 1
         wait_after_s: 1
 
+      - !RelayControl
+        name: "Turn On The Tracker"
+        relay: 1
+        state: 1
+        wait_after_s: 1
+
+      # The card cannot be mounted until the firmware has handed it over, and
+      # nothing enumerates on the hub port until it has. Left on the default
+      # since: scenario deliberately - the line arrives while the previous
+      # command is still finishing.
+      - !DutLogExpect:
+        name: "Tracker Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        timeout_s: 60
+
+  # The tracker will only connect to a sensor whose name it was configured
+  # with, so that configuration is checked before anything depends on it.
+  - !Group
+    name: "Confirm The Tracker Is Configured For This Sensor"
+    commands:
       - !DutStorage:
         name: "Mount The Card"
         port: dut_storage
@@ -66,6 +111,10 @@ groups:
         name: "Unmount The Card"
         action: unmount
 
+      # Returning the card is what lets the tracker get back to recording, and
+      # only then does it start BLE at all. Both halves are needed: the eject
+      # hands control back, and the later loss of VBUS makes it re-mount the
+      # card for its own use.
       - !DutStorage:
         name: "Give The Card Back To The Tracker"
         port: dut_storage
@@ -78,26 +127,8 @@ groups:
         wait_after_s: 1
 
   - !Group
-    name: "Bring The Sensor Up"
+    name: "Tracker Finds The Sensor"
     commands:
-      # 60 bpm with 25 ms of beat-to-beat jitter: a resting pulse with real
-      # variability, which is the quantity under test. seed makes the beat
-      # sequence identical from run to run, so a failure is reproducible.
-      - !BleHrvSimStart:
-        name: "Advertise A Heart Rate Sensor"
-        session: hrv
-        device: "GoraHRV_01"
-        bpm: 60
-        jitter_ms: 25
-        interval_s: 1
-        seed: 1
-
-      - !RelayControl
-        name: "Turn On The Tracker"
-        relay: 1
-        state: 1
-        wait_after_s: 1
-
       - !DutLogExpect:
         name: "Tracker Finds The Sensor"
         validation: 'matches({line}, r"Matching HR sensor found! Name: GoraHRV_01")'
@@ -117,22 +148,20 @@ groups:
       # its subscription would not. It is also where the counters
       # !BleHrvSimStop asserts on start from zero: beats the sensor generated
       # before this were discarded, not sent.
-      #
-      # timeout_s covers the whole scan, connect, discover and subscribe
-      # sequence, so it is generous rather than tight.
       - !DutLogExpect:
         name: "Tracker Logs A Measurement With An RR Interval"
         validation: 'matches({line}, r"HR: \d+ bpm .* RR-Count: [1-9]")'
         timeout_s: 60
 
       # A pulse the tracker cannot have inferred from anything else, so its
-      # appearance in the log proves the value came from this sensor.
+      # appearance in the log proves the value came from this sensor. No
+      # buffered line can match it either, since the sensor has only ever sent
+      # 60 bpm up to this point.
       - !BleHrvSimSet:
         name: "Raise The Pulse"
         session: hrv
         actions:
           - bpm: 120
-            wait_after_ms: 3000
 
       # wait_after_s leaves the sensor streaming for a minute once the new
       # pulse is confirmed, at the deterministic 1 Hz cadence interval_s sets.
@@ -142,7 +171,7 @@ groups:
       - !DutLogExpect:
         name: "Tracker Reports The New Pulse"
         validation: 'matches({line}, r"HR: 1[12]\d bpm")'
-        timeout_s: 20
+        timeout_s: 30
         wait_after_s: 60
 
   - !Group
@@ -150,7 +179,8 @@ groups:
     commands:
       # A sensor that stays connected but goes quiet: a strap loosening, or a
       # link with no airtime. The tracker should notice the gap rather than
-      # carrying the last value forward.
+      # carrying the last value forward. `stall` returns at once, so the
+      # wait_after_ms is what actually sits through the gap.
       - !BleHrvSimSet:
         name: "Sensor Goes Quiet For Ten Seconds"
         session: hrv
@@ -160,9 +190,16 @@ groups:
             wait_after_ms: 12000
           - contact: "yes"
 
+      # since: command is essential here, not a refinement. Every measurement
+      # before the stall also said "Contact: yes", so the default whole-run
+      # scope would match a line from a minute ago and pass without the tracker
+      # having recovered at all. Scoping to this command onwards is what makes
+      # it a real check - and it is safe to do so, because the sensor keeps
+      # sending every second, so there is no single line to miss.
       - !DutLogExpect:
         name: "Tracker Resumes After The Gap"
         validation: 'matches({line}, r"HR: \d+ bpm .* Contact: yes")'
+        since: command
         timeout_s: 30
 
   - !Group
@@ -179,8 +216,11 @@ groups:
         session: hrv
         actions:
           - burst: 12
-            wait_after_ms: 2000
 
+      # Left on since: scenario, unlike the check above. The burst is a single
+      # frame, so scoping to this command onwards could miss the one line that
+      # reports it - and no ordinary measurement can match, since streaming at
+      # 1 Hz never produces more than two intervals per notification.
       - !DutLogExpect:
         name: "Tracker Keeps Only Eight Of The Twelve"
         validation: 'matches({line}, r"RR-Count: 8")'
@@ -198,11 +238,24 @@ groups:
         session: hrv
         validation: "{subscribed} and {notifications} >= 60 and {rr_intervals} >= 60"
 
+      # No wait_after_s, deliberately: the check below is scoped to this
+      # command onwards, so any pause here is a window in which the line it is
+      # waiting for could arrive and be missed. The firmware has to notice
+      # VBUS, unmount and re-present the card, which takes far longer than the
+      # milliseconds this leaves - but a second of slack would not be safe.
       - !UsbSwitch
         name: "Connect Storage USB"
         port: dut_storage
         state: 1
-        wait_after_s: 1
+
+      # since: command, unlike the identical check at boot: the card has been
+      # handed over once already this run, so the whole-run scope would match
+      # that first handover and let the mount below race the enumeration.
+      - !DutLogExpect:
+        name: "Tracker Hands The Card Back To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        since: command
+        timeout_s: 60
 
       - !DutStorage:
         name: "Mount The Card"

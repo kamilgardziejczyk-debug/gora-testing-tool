@@ -21,13 +21,13 @@ from dbus_fast.aio import MessageBus, ProxyInterface
 from dbus_fast.service import PropertyAccess, ServiceInterface, dbus_property, method
 
 from .loop import AsyncLoop
+from .mgmt import MgmtError, MgmtSocket, MgmtUnavailable, adapter_index
 from .uuids import normalize_uuid
 
 LOGGER = logging.getLogger(__name__)
 
 BLUEZ_SERVICE = "org.bluez"
 GATT_MANAGER_INTERFACE = "org.bluez.GattManager1"
-ADVERTISING_MANAGER_INTERFACE = "org.bluez.LEAdvertisingManager1"
 
 DEFAULT_ADAPTER = "hci0"
 DEFAULT_TIMEOUT_S = 15.0
@@ -48,6 +48,16 @@ BASE_UUID_TAIL = "-0000-1000-8000-00805f9b34fb"
 AD_MAX_BYTES = 31
 AD_FLAGS_BYTES = 3
 AD_HEADER_BYTES = 2
+
+# AD structure types, from the Bluetooth assigned numbers.
+AD_TYPE_FLAGS = 0x01
+AD_TYPE_UUID16_COMPLETE = 0x03
+AD_TYPE_UUID128_COMPLETE = 0x07
+AD_TYPE_LOCAL_NAME_COMPLETE = 0x09
+
+# LE General Discoverable Mode | BR/EDR Not Supported. Sent as our own Flags
+# structure rather than left to the kernel, so the whole PDU is built here.
+AD_FLAGS_VALUE = 0x06
 
 CHARACTERISTIC_FLAGS = ("read", "write", "write-without-response", "notify", "indicate")
 
@@ -92,20 +102,43 @@ def advertising_uuid(uuid: str) -> str:
     return full
 
 
-def advertising_data_size(local_name: str, service_uuids: Sequence[str]) -> int:
-    """Bytes the advertising PDU needs for flags, the UUID list and the name."""
-    short = [advertising_uuid(uuid) for uuid in service_uuids]
-    uuid16_bytes = sum(2 for uuid in short if len(uuid) == 4)
-    uuid128_bytes = sum(16 for uuid in short if len(uuid) != 4)
+def build_advertising_data(local_name: str, service_uuids: Sequence[str]) -> bytes:
+    """Build the advertising PDU: flags, the service UUID list, then the name.
 
-    total = AD_FLAGS_BYTES
-    if uuid16_bytes:
-        total += AD_HEADER_BYTES + uuid16_bytes
-    if uuid128_bytes:
-        total += AD_HEADER_BYTES + uuid128_bytes
+    Everything goes in this one payload, with no scan response. That is the
+    point of building it here rather than describing it to BlueZ, which splits
+    the name off into a scan response - a separate PDU, and therefore invisible
+    to a central that only matches a peripheral advertising its name and a
+    service UUID together.
+    """
+    short = [advertising_uuid(uuid) for uuid in service_uuids]
+    uuid16 = b"".join(int(uuid, 16).to_bytes(2, "little") for uuid in short if len(uuid) == 4)
+    uuid128 = b"".join(
+        bytes.fromhex(uuid.replace("-", ""))[::-1] for uuid in short if len(uuid) != 4
+    )
+
+    data = _ad_structure(AD_TYPE_FLAGS, bytes([AD_FLAGS_VALUE]))
+    if uuid16:
+        data += _ad_structure(AD_TYPE_UUID16_COMPLETE, uuid16)
+    if uuid128:
+        data += _ad_structure(AD_TYPE_UUID128_COMPLETE, uuid128)
     if local_name:
-        total += AD_HEADER_BYTES + len(local_name.encode("utf-8"))
-    return total
+        data += _ad_structure(AD_TYPE_LOCAL_NAME_COMPLETE, local_name.encode("utf-8"))
+    return data
+
+
+def advertising_data_size(local_name: str, service_uuids: Sequence[str]) -> int:
+    """Bytes the advertising PDU needs for flags, the UUID list and the name.
+
+    Measured by building the real payload rather than predicting it, so the
+    budget check can never disagree with what is actually broadcast.
+    """
+    return len(build_advertising_data(local_name, service_uuids))
+
+
+def _ad_structure(ad_type: int, payload: bytes) -> bytes:
+    """One AD structure: a length byte covering the type and its payload."""
+    return bytes([len(payload) + 1, ad_type]) + payload
 
 
 def check_advertising_data(local_name: str, service_uuids: Sequence[str]) -> None:
@@ -255,32 +288,6 @@ class _GattCharacteristic(ServiceInterface):
         self.emit_properties_changed({"Value": self._value})
 
 
-class _Advertisement(ServiceInterface):
-    """org.bluez.LEAdvertisement1 - what the peripheral broadcasts."""
-
-    def __init__(self, path: str, local_name: str, service_uuids: Sequence[str]):
-        super().__init__("org.bluez.LEAdvertisement1")
-        self.path = path
-        self._local_name = local_name
-        self._service_uuids = [advertising_uuid(uuid) for uuid in service_uuids]
-
-    @dbus_property(access=PropertyAccess.READ)
-    def Type(self) -> "s":  # noqa: N802
-        return "peripheral"
-
-    @dbus_property(access=PropertyAccess.READ)
-    def ServiceUUIDs(self) -> "as":  # noqa: N802
-        return self._service_uuids
-
-    @dbus_property(access=PropertyAccess.READ)
-    def LocalName(self) -> "s":  # noqa: N802
-        return self._local_name
-
-    @method()
-    def Release(self) -> "":  # noqa: N802
-        LOGGER.warning("BlueZ released the advertisement for '%s'", self._local_name)
-
-
 class BlePeripheral:
     """A GATT server advertising itself for one central to connect to.
 
@@ -317,15 +324,14 @@ class BlePeripheral:
         self.adapter = adapter
         self.timeout_s = timeout_s
 
+        self._index = adapter_index(adapter)
+        self._advertising_data = build_advertising_data(local_name, self.advertised_services)
         self._loop = AsyncLoop()
         self._bus: Optional[MessageBus] = None
         self._characteristics: Dict[str, _GattCharacteristic] = {}
         self._exported: List[str] = []
-        self._advertisement = _Advertisement(
-            f"{APP_ROOT_PATH}/advertisement0",
-            local_name,
-            self.advertised_services,
-        )
+        self._mgmt: Optional[MgmtSocket] = None
+        self._instance: Optional[int] = None
         self._started = False
         self._closed = False
 
@@ -368,13 +374,27 @@ class BlePeripheral:
         return "\n".join(lines)
 
     def start(self) -> None:
-        """Register the GATT application and start advertising."""
+        """Register the GATT application with BlueZ, then start advertising.
+
+        The two halves go to different places on purpose: the GATT server is
+        bluetoothd's to serve, over D-Bus, while the advertisement is sent
+        straight to the kernel - see `mgmt.py` for why BlueZ cannot be asked
+        to do the second part.
+        """
         self._ensure_open()
         if self._started:
             raise RuntimeError(f"'{self.local_name}' is already advertising")
 
         LOGGER.info("Starting peripheral '%s' on %s", self.local_name, self.adapter)
-        self._loop.run(self._start(), self.timeout_s)
+        self._loop.run(self._register_application(), self.timeout_s)
+        try:
+            self._start_advertising()
+        except Exception:
+            # The GATT half is already registered; leaving it behind would hold
+            # the application on the adapter with nothing advertising it.
+            self._loop.run(self._release_application(), self.timeout_s)
+            raise
+
         self._started = True
         LOGGER.info(
             "Peripheral '%s' advertising %s",
@@ -389,10 +409,17 @@ class BlePeripheral:
 
         self._started = False
         try:
-            self._loop.run(self._stop(), self.timeout_s)
-        except (DBusError, TimeoutError, OSError) as error:
+            self._stop_advertising()
+        except (MgmtError, OSError) as error:
             # Local state is already cleared, so a failed teardown must not
             # stop the caller from moving on - same reasoning as the central's.
+            # It does leak an advertising slot on the adapter, so it is a
+            # warning rather than something to swallow silently.
+            LOGGER.warning("Could not remove the advertisement for '%s': %s", self.local_name, error)
+
+        try:
+            self._loop.run(self._release_application(), self.timeout_s)
+        except (DBusError, TimeoutError, OSError) as error:
             LOGGER.warning("Error while stopping peripheral '%s': %s", self.local_name, error)
         else:
             LOGGER.info("Peripheral '%s' stopped", self.local_name)
@@ -443,61 +470,87 @@ class BlePeripheral:
         """Forget writes recorded so far, so a later assertion starts clean."""
         self._characteristic(char_uuid).writes.clear()
 
-    async def _start(self) -> None:
-        """Export every object, then hand the application to BlueZ.
-
-        A failure at either registration step tears the whole thing back down,
-        so a rejected start leaves the peripheral exactly as unstarted as it
-        was rather than holding a half-registered application and a live bus.
-        """
+    async def _register_application(self) -> None:
+        """Export every object and hand the GATT application to BlueZ."""
         self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         self._export_objects()
-        gatt_manager, advertising_manager = await self._managers()
+        gatt_manager = await self._gatt_manager()
 
         try:
             await gatt_manager.call_register_application(APP_ROOT_PATH, {})
         except DBusError as error:
-            await self._release(None, None)
+            await self._release_application()
             raise AdvertisingRejected(
                 f"BlueZ refused the GATT application for '{self.local_name}': {error}"
             ) from error
 
+    async def _release_application(self) -> None:
+        """Unregister the GATT application and drop every exported object.
+
+        Safe to call whether or not registration got as far as succeeding: an
+        unregister BlueZ does not recognise is logged and ignored, because the
+        exported objects and the bus still have to be cleaned up either way.
+        """
+        if self._bus is None:
+            return
+
         try:
-            await advertising_manager.call_register_advertisement(self._advertisement.path, {})
+            gatt_manager = await self._gatt_manager()
+            await gatt_manager.call_unregister_application(APP_ROOT_PATH)
         except DBusError as error:
-            await self._release(gatt_manager, None)
+            LOGGER.debug("BlueZ had no GATT application to unregister: %s", error)
+
+        for path in self._exported:
+            self._bus.unexport(path)
+        self._exported.clear()
+        self._bus.disconnect()
+        self._bus = None
+        self._characteristics.clear()
+
+    def _start_advertising(self) -> None:
+        """Put the advertising payload on the air through the kernel."""
+        try:
+            self._mgmt = MgmtSocket(self.timeout_s)
+            features = self._mgmt.read_advertising_features(self._index)
+            self._check_payload_fits(features.max_adv_data_len)
+            self._instance = features.free_instance()
+            self._mgmt.add_advertising(self._index, self._instance, self._advertising_data)
+        except (MgmtError, MgmtUnavailable, OSError) as error:
+            self._close_mgmt()
             raise AdvertisingRejected(
-                f"BlueZ refused to advertise '{self.local_name}' on {self.adapter}: {error}. "
-                f"BlueZ does not report why over D-Bus - check the adapter is powered and see "
-                f"'journalctl -u bluetooth' on the host for the underlying reason."
+                f"could not advertise '{self.local_name}' on {self.adapter}: {error}"
             ) from error
 
-    async def _stop(self) -> None:
-        """Unregister from BlueZ and drop every exported object."""
-        await self._release(*await self._managers())
+    def _stop_advertising(self) -> None:
+        """Remove the advertisement and close the management socket."""
+        try:
+            if self._mgmt is not None and self._instance is not None:
+                self._mgmt.remove_advertising(self._index, self._instance)
+        finally:
+            self._close_mgmt()
 
-    async def _release(
-        self,
-        gatt_manager: Optional[ProxyInterface],
-        advertising_manager: Optional[ProxyInterface],
-    ) -> None:
-        """Undo whatever `_start` got as far as doing, in reverse order.
+    def _close_mgmt(self) -> None:
+        """Drop the management socket and forget the instance it held."""
+        if self._mgmt is not None:
+            self._mgmt.close()
+            self._mgmt = None
+        self._instance = None
 
-        Both managers are optional so a start that failed part-way can reuse
-        this, passing only what it actually managed to register.
+    def _check_payload_fits(self, max_adv_data_len: int) -> None:
+        """Reject a payload this adapter cannot carry.
+
+        The constructor already checked it against the 31 bytes a legacy
+        advertising PDU holds. This is the adapter's own answer to the same
+        question, which can be smaller, and is only knowable once a socket to
+        it is open.
         """
-        if advertising_manager is not None:
-            await advertising_manager.call_unregister_advertisement(self._advertisement.path)
-        if gatt_manager is not None:
-            await gatt_manager.call_unregister_application(APP_ROOT_PATH)
-
-        if self._bus is not None:
-            for path in self._exported:
-                self._bus.unexport(path)
-            self._exported.clear()
-            self._bus.disconnect()
-            self._bus = None
-        self._characteristics.clear()
+        if len(self._advertising_data) <= max_adv_data_len:
+            return
+        raise MgmtError(
+            f"the advertising payload is {len(self._advertising_data)} bytes but {self.adapter} "
+            f"accepts at most {max_adv_data_len}. Shorten the advertised name or advertise "
+            f"fewer services."
+        )
 
     async def _push(self, characteristic: _GattCharacteristic, payload: bytes) -> None:
         """Emit a notification from the event loop thread, where the bus lives."""
@@ -509,7 +562,6 @@ class BlePeripheral:
         if bus is None:
             raise RuntimeError("bus is not connected")
 
-        self._export(self._advertisement.path, self._advertisement)
         for service_index, spec in enumerate(self.services):
             service_path = f"{APP_ROOT_PATH}/service{service_index}"
             service = _GattService(service_path, normalize_uuid(spec.uuid), spec.primary)
@@ -526,15 +578,12 @@ class BlePeripheral:
         self._bus.export(path, interface)
         self._exported.append(path)
 
-    async def _managers(self) -> Tuple[ProxyInterface, ProxyInterface]:
-        """Proxy interfaces for the adapter's GATT and advertising managers."""
+    async def _gatt_manager(self) -> ProxyInterface:
+        """Proxy interface for the adapter's GATT manager."""
         adapter_path = f"/org/bluez/{self.adapter}"
         introspection = await self._bus.introspect(BLUEZ_SERVICE, adapter_path)
         proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, adapter_path, introspection)
-        return (
-            proxy.get_interface(GATT_MANAGER_INTERFACE),
-            proxy.get_interface(ADVERTISING_MANAGER_INTERFACE),
-        )
+        return proxy.get_interface(GATT_MANAGER_INTERFACE)
 
     def _characteristic(self, char_uuid: str) -> _GattCharacteristic:
         """Look up a declared characteristic, naming what is available if absent."""
