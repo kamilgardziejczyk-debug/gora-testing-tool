@@ -344,6 +344,11 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
     and FAT updates still pending on that mount are lost when the card is
     ejected — the kernel logs `lost async page write` and every later mount
     reports the volume as not properly unmounted.
+*   The runner in the image does not update itself (`--disableupdate`): its
+    self-update failed on the nodes and removed its own binaries, leaving the
+    container restarting. Bump `RUNNER_VERSION` in the Dockerfile to a current
+    release instead — GitHub stops sending jobs to a runner that falls too far
+    behind.
 *   `EXTRA_DOCKER_RUN_ARGS` (optional): flags appended to every node's
     `docker run` for anything that *does* vary per node, e.g.
     `EXTRA_DOCKER_RUN_ARGS='--device /dev/ttyUSB0'` for serial scenarios, or

@@ -63,11 +63,13 @@ if [ -n "${GH_PAT:-}" ] && [ -n "${GH_REPO:-}" ]; then
             || rm -f .runner .runner_migrated .credentials .credentials_rsaparams
     fi
 
+    # --disableupdate: the runner's self-update failed in this container and left it
+    # without its own binaries. The Dockerfile pins RUNNER_VERSION instead.
     ./config.sh --url "https://github.com/${GH_REPO}" \
         --token "$(fetch_token)" \
         --name "$RUNNER_NAME" \
         --labels "$RUNNER_LABELS" \
-        --unattended --replace
+        --unattended --replace --disableupdate
 
     remove_runner() {
         echo "[entrypoint] De-registering runner '${RUNNER_NAME}'"

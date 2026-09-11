@@ -55,7 +55,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 # ---------------------------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim-bookworm
 
-ARG RUNNER_VERSION=2.336.0
+# entrypoint.sh registers the runner with --disableupdate, so this pin is the only
+# way to a newer runner: keep it at a current release, or GitHub stops sending jobs.
+ARG RUNNER_VERSION=2.337.0
 ARG RUNNER_ARCH=arm64
 
 # tzdata lets `-e TZ=Europe/Dublin` give the HTML report local timestamps;
