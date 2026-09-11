@@ -11,9 +11,10 @@ from .wrapper import Wrapper
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BAUDRATE = 460800
-BOOTLOADER_FLASH_ADDRESS = 0x0000
-PARTITION_TABLE_FLASH_ADDRESS = 0x8000
+DEFAULT_BOOTLOADER_FLASH_ADDRESS = 0x0000
+DEFAULT_PARTITION_TABLE_FLASH_ADDRESS = 0x8000
 DEFAULT_FIRMWARE_FLASH_ADDRESS = 0x10000
+FLASH_SECTOR_SIZE = 0x1000
 
 
 class ProgramEsptoolWrapper(Wrapper):
@@ -21,8 +22,8 @@ class ProgramEsptoolWrapper(Wrapper):
     Wrapper for flashing ESP32 microcontrollers using the `esptool` library.
 
     Mirrors `!ProgramJlink`'s shape: `firmware` plus an optional `address` is
-    enough to flash a single image. `bootloader` and `partition_table` stay
-    available for a full flash and are written at their fixed ESP32 addresses.
+    enough to flash a single image. `bootloader`, `partition_table` and
+    `ota_data` stay available for a full flash, each at its own address.
     """
 
     supports_port_override = True
@@ -35,7 +36,11 @@ class ProgramEsptoolWrapper(Wrapper):
         self.baudrate: int = DEFAULT_BAUDRATE
         self.firmware_dir: str | None = None
         self.bootloader: str | None = None
+        self.bootloader_address: int = DEFAULT_BOOTLOADER_FLASH_ADDRESS
         self.partition_table: str | None = None
+        self.partition_table_address: int = DEFAULT_PARTITION_TABLE_FLASH_ADDRESS
+        self.ota_data: str | None = None
+        self.ota_data_address: int | None = None
         self.firmware: str | None = None
         self.address: int = DEFAULT_FIRMWARE_FLASH_ADDRESS
         self.timeout_s: float | None = None
@@ -48,56 +53,76 @@ class ProgramEsptoolWrapper(Wrapper):
         for key_node, value_node in self.command_node.value:
             if not isinstance(key_node, yaml.ScalarNode) or not isinstance(value_node, yaml.ScalarNode):
                 continue
-
-            key = key_node.value
-            if key == "name":
-                self.name = value_node.value
-            elif key == "port":
-                self.port = value_node.value
-            elif key == "baudrate":
-                self.baudrate = int(value_node.value)
-            elif key == "firmware_dir":
-                self.firmware_dir = value_node.value
-            elif key == "bootloader":
-                self.bootloader = value_node.value
-            elif key == "partition_table":
-                self.partition_table = value_node.value
-            elif key == "firmware":
-                self.firmware = value_node.value
-            elif key == "address":
-                self.address = self._parse_address(value_node.value)
-            elif key == "timeout_s":
-                self.timeout_s = float(value_node.value)
+            self._parse_field(key_node.value, value_node.value)
 
         self._validate_parsed_fields()
         self._resolve_relative_firmware_dir()
 
+        images = ", ".join(f"{name}@0x{address:X}" for address, name in self._images() if name is not None)
         LOGGER.info(
-            "Parsed ProgramEsptool values: name=%s, port=%s, baudrate=%s, firmware_dir=%s, bootloader=%s, "
-            "partition_table=%s, firmware=%s, address=0x%X, timeout_s=%s",
+            "Parsed ProgramEsptool values: name=%s, port=%s, baudrate=%s, firmware_dir=%s, images=[%s], timeout_s=%s",
             self.name,
             self.port,
             self.baudrate,
             self.firmware_dir,
-            self.bootloader,
-            self.partition_table,
-            self.firmware,
-            self.address,
+            images,
             self.timeout_s,
         )
 
+    def _parse_field(self, key: str, value: str) -> None:
+        """Store one scalar YAML field. Unknown keys are ignored."""
+        if key == "name":
+            self.name = value
+        elif key == "port":
+            self.port = value
+        elif key == "baudrate":
+            self.baudrate = int(value)
+        elif key == "firmware_dir":
+            self.firmware_dir = value
+        elif key == "bootloader":
+            self.bootloader = value
+        elif key == "bootloader_address":
+            self.bootloader_address = self._parse_address(key, value)
+        elif key == "partition_table":
+            self.partition_table = value
+        elif key == "partition_table_address":
+            self.partition_table_address = self._parse_address(key, value)
+        elif key == "ota_data":
+            self.ota_data = value
+        elif key == "ota_data_address":
+            self.ota_data_address = self._parse_address(key, value)
+        elif key == "firmware":
+            self.firmware = value
+        elif key == "address":
+            self.address = self._parse_address(key, value)
+        elif key == "timeout_s":
+            self.timeout_s = float(value)
+
     @staticmethod
-    def _parse_address(raw_address: str) -> int:
+    def _parse_address(key: str, raw_address: str) -> int:
         """Convert a YAML flash address (`0x10000`, `65536`) to an int."""
         try:
             return int(raw_address, 0)
         except ValueError:
-            raise ValueError(f"ProgramEsptool: 'address' is not a valid number: {raw_address}") from None
+            raise ValueError(f"ProgramEsptool: '{key}' is not a valid number: {raw_address}") from None
 
     def _validate_parsed_fields(self) -> None:
         """Reject a scenario missing YAML-only required fields, before any hardware is touched."""
         if self.firmware is None:
             raise ValueError("ProgramEsptool: no firmware filename specified in YAML")
+        if self.ota_data is not None and self.ota_data_address is None:
+            raise ValueError(
+                "ProgramEsptool: 'ota_data' needs 'ota_data_address' (the otadata offset from the partition table)"
+            )
+
+    def _images(self) -> list[tuple[int | None, str | None]]:
+        """Every (address, filename) pair this command can flash, set or not."""
+        return [
+            (self.bootloader_address, self.bootloader),
+            (self.partition_table_address, self.partition_table),
+            (self.ota_data_address, self.ota_data),
+            (self.address, self.firmware),
+        ]
 
     def _resolve_relative_firmware_dir(self) -> None:
         """Resolve a relative firmware_dir set in YAML against the scenario file.
@@ -137,24 +162,35 @@ class ProgramEsptoolWrapper(Wrapper):
         if not base.is_dir():
             raise ValueError(f"ProgramEsptool: firmware path is not a directory: {self.firmware_dir}")
 
-        # Ordered low address first, so a full flash writes bootloader, partition
-        # table and app in the same order a manual esptool invocation would.
-        entries = [
-            (BOOTLOADER_FLASH_ADDRESS, self.bootloader),
-            (PARTITION_TABLE_FLASH_ADDRESS, self.partition_table),
-            (self.address, self.firmware),
-        ]
-
         flash_data: list[tuple[int, str]] = []
-        for address, filename in entries:
-            if filename is None:  # bootloader / partition_table are optional
+        for address, filename in self._images():
+            if filename is None:  # everything but firmware is optional
                 continue
             path = base / filename
             if not path.is_file():
                 raise FileNotFoundError(f"ProgramEsptool: binary not found: {path}")
             flash_data.append((address, str(path)))
 
+        # Low address first, the order a manual esptool invocation would write them.
+        flash_data.sort()
+        self._reject_overlaps(flash_data)
         return flash_data
+
+    @staticmethod
+    def _reject_overlaps(flash_data: list[tuple[int, str]]) -> None:
+        """Fail before connecting if writing one image would erase part of the next.
+
+        esptool erases whole flash sectors, so each image occupies its size
+        rounded up to a sector.
+        """
+        for (address, path), (next_address, next_path) in zip(flash_data, flash_data[1:]):
+            sectors = -(-Path(path).stat().st_size // FLASH_SECTOR_SIZE)
+            end = address + sectors * FLASH_SECTOR_SIZE
+            if end > next_address:
+                raise ValueError(
+                    f"ProgramEsptool: {path} at 0x{address:X} runs to 0x{end:X} and overlaps {next_path} "
+                    f"at 0x{next_address:X}; check the addresses against the partition table"
+                )
 
     def _run_esptool(self, flash_data: list[tuple[int, str]]) -> None:
         """Flash the device, failing the step if `timeout_s` elapses first.

@@ -74,13 +74,19 @@ groups:
         name: "Release The Console For Flashing"
         state: 0
 
+      # Addresses follow flash_files in the build's flasher_args.json.
       - !ProgramEsptool:
         name: "Flash The Tracker"
         bootloader: "bootloader.bin"
+        bootloader_address: 0x0
         partition_table: "partition-table.bin"
+        partition_table_address: 0x8000
+        ota_data: "ota_data_initial.bin"
+        ota_data_address: 0x10000
         firmware: "tekpadz.bin"
+        address: 0x20000
         port: "/dev/ttyUSB0"
-        timeout_s: 20
+        timeout_s: 30
 
   - !Group
       name: "Clean Up"

@@ -669,14 +669,18 @@ Flashes an ESP32 microcontroller using the `esptool` library.
 *   `baudrate`: (Optional) Upload baudrate. Defaults to `460800`.
 *   `firmware_dir`: (Required if not overridden via `-f` / `--firmware`) Directory containing the firmware binaries. A relative path resolves against the scenario file's directory, so a scenario and its firmware can be moved together as one portable tree. A CLI `-f`/`--firmware` value overrides this entirely and is used as-is (relative to the shell's working directory, like any other CLI argument).
 *   `firmware`: (Required) App firmware filename.
-*   `address`: (Optional) Load address for `firmware` (e.g. `0x20000`). Defaults to `0x10000`, the standard ESP-IDF app partition offset.
-*   `bootloader`: (Optional) Bootloader filename, flashed at `0x0000`. Omit it to leave the bootloader already on the chip untouched.
-*   `partition_table`: (Optional) Partition table filename, flashed at `0x8000`. Omit it to leave the table already on the chip untouched.
+*   `address`: (Optional) Load address for `firmware`. Defaults to `0x10000`, the app offset of ESP-IDF's single-app partition table. OTA tables usually move the app (e.g. to `0x20000`).
+*   `bootloader`: (Optional) Bootloader filename. Omit it to leave the bootloader already on the chip untouched.
+*   `bootloader_address`: (Optional) Defaults to `0x0` (ESP32-S3/C3; the original ESP32 uses `0x1000`).
+*   `partition_table`: (Optional) Partition table filename. Omit it to leave the table already on the chip untouched.
+*   `partition_table_address`: (Optional) Defaults to `0x8000`.
+*   `ota_data`: (Optional) OTA data image (`ota_data_initial.bin`). Resets the boot selection to `ota_0`, so the fresh app boots even if the device last switched to `ota_1`.
+*   `ota_data_address`: (Required with `ota_data`) The `otadata` offset from the partition table. There is no default.
 *   `timeout_s`: (Optional) Fail the step if flashing doesn't finish within this many seconds. Defaults to no timeout. Note the difference from `!ProgramJlink`: esptool runs in-process rather than as a subprocess, so the timeout fails the command (stopping the scenario) but cannot interrupt a write already in progress.
 
 If the DUT's console is being captured on the same port this flashes (the usual ESP32 case, where both are `/dev/ttyUSB0`), bracket this command with [`!DutLogControl`](#dutlogcontrol) so the two do not read the port at once. A scenario that does not is rejected before the first command runs.
 
-Giving only `firmware` (plus `port`/`firmware_dir`) flashes the app alone — the quick edit-flash-test loop, matching `!ProgramJlink`'s single-binary form. Adding `bootloader` and `partition_table` performs the full three-image flash, in ascending address order:
+Giving only `firmware` (plus `port`/`firmware_dir`) flashes the app alone — the quick edit-flash-test loop, matching `!ProgramJlink`'s single-binary form. Adding `bootloader`, `partition_table` and, for an OTA partition table, `ota_data` performs a full flash. Images are written in ascending address order; overlapping images are rejected before connecting. The addresses to use are listed under `flash_files` in the build's `build/flasher_args.json`:
 
 ```yaml
   - !ProgramEsptool:
@@ -691,6 +695,16 @@ Giving only `firmware` (plus `port`/`firmware_dir`) flashes the app alone — th
     bootloader: "bootloader.bin"
     partition_table: "partition-table.bin"
     firmware: "tracker.bin"
+
+  - !ProgramEsptool:
+    name: "Full Flash With An OTA Partition Table"
+    port: "/dev/ttyUSB0"
+    bootloader: "bootloader.bin"
+    partition_table: "partition-table.bin"
+    ota_data: "ota_data_initial.bin"
+    ota_data_address: 0x10000
+    firmware: "tracker.bin"
+    address: 0x20000
 ```
 
 ### `!RelayControl`
