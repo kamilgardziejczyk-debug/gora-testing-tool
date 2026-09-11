@@ -215,9 +215,12 @@ groups:
         port: dut_storage
         state: 1
 
+      # since: group - the Clean Up hand-off logged these same lines, and
+      # would otherwise satisfy both checks in this group.
       - !DutLogExpect:
         name: "Device Hands The Card To The Host"
         validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        since: group
         timeout_s: 30
 
       - !DutStorage:
@@ -250,6 +253,7 @@ groups:
       - !DutLogExpect:
         name: "Device Reclaims The Card On Eject"
         validation: 'matches({line}, "Storage control returned to ESP32")'
+        since: group
         timeout_s: 15
 
   # Clean up after tests

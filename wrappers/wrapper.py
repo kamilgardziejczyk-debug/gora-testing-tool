@@ -63,9 +63,14 @@ class Wrapper(ABC):
     names the scenario gave it - set by main.py on wrappers declaring
     `requires_usb_hub`. One switchboard serves the whole scenario so hub
     discovery is paid for once rather than per command.
+
+    `group_start_seq` is the DUT console's line sequence at the moment this
+    command's `!Group` began, set by main.py as the run reaches each command.
+    `!DutLogExpect` searches from it for `since: group`.
     """
 
     wait_after_s: float | None = None
+    group_start_seq: int | None = None
     scenario_dir: Path | None = None
     tag: str | None = None
     group: str | None = None

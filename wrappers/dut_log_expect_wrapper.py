@@ -52,9 +52,12 @@ DEFAULT_TIMEOUT_S = 30.0
 # output arriving before the check is the normal case, not the exception (see
 # the module docstring); "command" exists for re-checking something after a
 # deliberate reset, where a match from before it would be a false pass.
+# "group" sits between them: a line the scenario provokes more than once, which
+# can still arrive while the previous command is finishing.
 SINCE_SCENARIO = "scenario"
 SINCE_COMMAND = "command"
-SINCE_CHOICES = (SINCE_SCENARIO, SINCE_COMMAND)
+SINCE_GROUP = "group"
+SINCE_CHOICES = (SINCE_SCENARIO, SINCE_COMMAND, SINCE_GROUP)
 
 # Tail of the capture quoted on failure, to show what the DUT *was* saying
 # instead of only that it never said the wanted thing.
@@ -136,6 +139,8 @@ class DutLogExpectWrapper(Wrapper):
         if self.since not in SINCE_CHOICES:
             choices = ", ".join(SINCE_CHOICES)
             raise ValueError(f"DutLogExpect: 'since' must be one of {choices}, got '{self.since}'")
+        if self.since == SINCE_GROUP and self.group_id is None:
+            raise ValueError("DutLogExpect: 'since: group' needs the command to be inside a !Group")
         if self.timeout_s <= 0:
             raise ValueError(f"DutLogExpect: timeout_s must be > 0, got {self.timeout_s}")
 
@@ -145,7 +150,11 @@ class DutLogExpectWrapper(Wrapper):
 
     def execute(self) -> None:
         session = self._require_session()
-        since_seq = 0 if self.since == SINCE_SCENARIO else session.device_seq()
+        since_seq = {
+            SINCE_SCENARIO: 0,
+            SINCE_COMMAND: session.device_seq(),
+            SINCE_GROUP: self.group_start_seq or 0,
+        }[self.since]
         dropped_before = session.device_lines_dropped()
 
         match, scanned = self._search(session, since_seq)
@@ -216,7 +225,11 @@ class DutLogExpectWrapper(Wrapper):
         buffer, "no match" no longer means "the DUT never said it", and saying
         so points at the complete log file instead of implying a clean negative.
         """
-        scope = "the whole run" if self.since == SINCE_SCENARIO else "this command onwards"
+        scope = {
+            SINCE_SCENARIO: "the whole run",
+            SINCE_COMMAND: "this command onwards",
+            SINCE_GROUP: f"the start of group '{self.group}' onwards",
+        }[self.since]
         message = (
             f"DutLogExpect: the DUT's console never satisfied '{self.validation}' within "
             f"{self.timeout_s}s ({scanned} line(s) examined, covering {scope})."

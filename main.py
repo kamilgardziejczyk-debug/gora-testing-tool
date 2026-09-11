@@ -493,7 +493,11 @@ def run_scenario(
         session.write_marker(f"SCENARIO START: {label} ({len(wrappers)} commands)")
 
     try:
+        # Console position as each group's first command starts, for `since: group`.
+        group_starts: dict[int | None, int] = {}
         for index, wrapper in enumerate(wrappers, start=1):
+            if session is not None:
+                wrapper.group_start_seq = group_starts.setdefault(wrapper.group_id, session.device_seq())
             _mark_command_start(session, wrapper, index, len(wrappers))
             result, failure = run_wrapper(wrapper)
             results.append(result)
