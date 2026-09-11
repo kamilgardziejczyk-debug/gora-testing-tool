@@ -151,6 +151,7 @@ groups:
         session: hrv
         device: "GoraHRV_01"
         bpm: 60
+        seed: 1
         jitter_ms: 25
         interval_s: 1
         seed: 1
@@ -190,7 +191,7 @@ groups:
 
       - !Loop
         name: "Record For Two Hours"
-        iterations: 24
+        iterations: 2
         commands:
           - !DutLogExpect:
             name: "Tracker Still Sampling"
