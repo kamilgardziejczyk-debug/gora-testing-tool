@@ -191,7 +191,7 @@ groups:
 
       - !Loop
         name: "Record For Two Hours"
-        iterations: 2
+        iterations: 24
         commands:
           - !DutLogExpect:
             name: "Tracker Still Sampling"
