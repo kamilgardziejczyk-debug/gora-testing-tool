@@ -7,11 +7,13 @@
 #
 #   python3 main.py -t scenarios/tracker.yml -p /dev/ttyUSB0 -f ./firmware
 #
-# All three images are written, in ascending address order - bootloader at
-# 0x0000, partition table at 0x8000, app at 0x10000 - which is what a blank
-# or repartitioned chip needs. Once a tracker is known to be provisioned,
-# dropping `bootloader` and `partition_table` flashes the app alone and leaves
-# what is already on the chip untouched.
+# All four images of the OTA layout are written, in ascending address order -
+# bootloader at 0x0, partition table at 0x8000, otadata at 0x10000, app at
+# 0x20000 - which is what a blank or repartitioned chip needs. Flashing
+# otadata also resets the boot slot to ota_0, where the app is written.
+#
+# PREREQUISITE: the card's configuration.json must name "GoraHRV_01" as
+# ble.hr_sensor_name; the Clean Up group checks it before the tracker runs.
 #
 # timeout_s guards against a device that never enters the ROM bootloader:
 # esptool otherwise sits retrying its connect handshake. Note that it fails the
@@ -107,6 +109,14 @@ groups:
           port: dut_storage
           action: mount
           mode: rw
+
+        # The tracker only connects to the sensor named in the card's
+        # configuration.json. !DutStorage cannot write it, so it is checked here.
+        - !DutStorage:
+          name: "Card Names The Sensor This Scenario Advertises"
+          action: read
+          path: "/configuration.json"
+          validation: '"GoraHRV_01" in {content}'
 
         - !DutStorage:
           name: "Clear The Session Directories"
