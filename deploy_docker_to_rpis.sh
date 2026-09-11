@@ -223,6 +223,29 @@ for ssh_target in "${TARGET_SSH_TARGETS[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 4c. Keep the desktop automounter off DUT cards. udisks2 otherwise mounts
+# every card a DUT exposes next to the tool's own mount; the tool's unmount
+# then leaves that second mount holding unwritten FAT updates, which are lost
+# when the tool ejects the card.
+# ---------------------------------------------------------------------------
+section "Disabling automount of DUT cards on target nodes"
+
+UDISKS_RULE='SUBSYSTEM=="block", ATTRS{idVendor}=="303a", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"'
+UDISKS_RULE_FILE="/etc/udev/rules.d/99-gora-dut-no-automount.rules"
+
+for ssh_target in "${TARGET_SSH_TARGETS[@]}"; do
+    if ssh ${SSH_OPTS} "${ssh_target}" "
+        set -e
+        echo '${UDISKS_RULE}' | sudo tee '${UDISKS_RULE_FILE}' >/dev/null
+        sudo udevadm control --reload-rules
+    "; then
+        info "${ssh_target}: DUT cards (USB vendor 303a) excluded from automount"
+    else
+        warn "${ssh_target}: could not install ${UDISKS_RULE_FILE} - the desktop may automount DUT cards and lose writes when the tool ejects them (see README)"
+    fi
+done
+
+# ---------------------------------------------------------------------------
 # 5. Cross-build the image for arm64, here
 # ---------------------------------------------------------------------------
 section "Building ${IMAGE_NAME}:${TAG} for ${PLATFORM}"

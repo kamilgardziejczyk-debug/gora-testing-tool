@@ -338,6 +338,12 @@ GH_PAT=ghp_xxx ./deploy_docker_to_rpis.sh rpi1@192.168.1.42 rpi2@192.168.1.43
 *   It also provisions each node's Bluetooth adapter to auto-power on every
     boot (skipped with a warning on a node with no `bluetoothctl` at all) —
     see the note in the `!BleCentral` Docker section above.
+*   It installs a udev rule (`/etc/udev/rules.d/99-gora-dut-no-automount.rules`)
+    that keeps the desktop automounter (udisks2) off cards a DUT exposes (USB
+    vendor `303a`). Otherwise the desktop mounts the card next to `!DutStorage`,
+    and FAT updates still pending on that mount are lost when the card is
+    ejected — the kernel logs `lost async page write` and every later mount
+    reports the volume as not properly unmounted.
 *   `EXTRA_DOCKER_RUN_ARGS` (optional): flags appended to every node's
     `docker run` for anything that *does* vary per node, e.g.
     `EXTRA_DOCKER_RUN_ARGS='--device /dev/ttyUSB0'` for serial scenarios, or
