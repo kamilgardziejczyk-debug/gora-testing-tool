@@ -44,7 +44,7 @@ dut_log:
 
 usb_hub:
   ports:
-    dut_storage: 1
+    dut_storage: 3
 
 
 groups:
