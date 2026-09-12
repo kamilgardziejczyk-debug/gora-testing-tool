@@ -1,0 +1,57 @@
+---
+# Hands the DUT's card to the host and holds it there, so `fsck.vfat` can be run
+# against it from a second container while this scenario waits.
+#
+#   python3 main.py -t scenarios/card_fsck.yml
+#
+# The card is not mounted here: fsck needs the block device to itself, and the
+# scenario's job is only to expose it, keep it exposed, and hand it back
+# cleanly. The eject is what tells the firmware the host has finished.
+name: "Card Check"
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+usb_hub:
+  ports:
+    dut_storage: 3
+
+groups:
+  - !Group
+    name: "Expose The Card"
+    commands:
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn on the device"
+        relay: 1
+        state: 1
+
+      - !DutLogExpect:
+        name: "Device Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        timeout_s: 60
+        # Long enough for fsck to run and be checked before the card goes back.
+        wait_after_s: 180
+
+  - !Group
+    name: "Give The Card Back"
+    commands:
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
+
+      - !DutLogExpect:
+        name: "Device Reclaims The Card On Eject"
+        validation: 'matches({line}, "Storage control returned to ESP32")'
+        since: group
+        timeout_s: 15
+
+      # USB power and the device are deliberately left on: the same port charges
+      # the tracker's battery, and cutting it here would stop the charge.

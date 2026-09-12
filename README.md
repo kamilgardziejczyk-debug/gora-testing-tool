@@ -594,6 +594,15 @@ Notes:
 python main.py -t scenarios/jlink_test.yml -f /path/to/my/nxp/firmware
 ```
 
+#### 2. Checking the DUT's card with `fsck`:
+```bash
+python main.py -t scenarios/card_fsck.yml
+```
+The scenario only hands the card to the host and holds it there for three minutes, so
+`fsck.vfat -a /dev/sdX` can be run against the block device meanwhile - it mounts nothing,
+because fsck needs the device to itself. It then ejects the card and leaves USB power and the
+DUT on, since the same port charges the board.
+
 ---
 
 ## 3. Supported Scenario Tags
