@@ -72,7 +72,18 @@ class DutLogger:
         self.session = session
         self.port = port
         self.baud = baud
-        self.reset_dut_on_open = True
+        # False, not True: on a board where the console shares the
+        # programming header (DTR/RTS wired to EN/GPIO0 through the usual
+        # auto-reset transistors), leaving both lines asserted - what
+        # pyserial does on an open() with neither explicitly set - can hold
+        # EN low for as long as this port stays open, which is normally the
+        # whole run. That reads as a DUT that never boots at all, on every
+        # console/programming-port-shared board, regardless of relay or
+        # battery state. Nothing in this codebase ever asks `start()` for a
+        # reset (`!DutLogControl`'s own `reset_dut` defaults to and is
+        # overwhelmingly left at False), so deasserting DTR/RTS here as well
+        # costs boards without that wiring nothing.
+        self.reset_dut_on_open = False
         self._serial: serial.Serial | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -273,9 +284,14 @@ class DutLogger:
         the handle is configured unopened and opened afterwards rather than
         constructed in one call.
 
-        Left asserted by default: that is what pyserial does on its own, and it
-        is the behaviour every board with a separate console port has always
-        had here.
+        Deasserted by default (`reset_dut_on_open` starts `False`): on a board
+        with no auto-reset wiring on DTR/RTS this changes nothing, and on one
+        that shares the console with the programming header it is what keeps
+        `start()` from holding EN low for the rest of the run. Something that
+        actually wants a fresh boot - a reattach right after a flash the
+        scenario just performed, say - asks for it explicitly by setting
+        `reset_dut_on_open` (or via `resume(reset_dut=True)`) rather than
+        relying on this default.
         """
         console = serial.Serial()
         console.port = self.port
