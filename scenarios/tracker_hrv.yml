@@ -268,12 +268,22 @@ groups:
         path: "/"
         validation: "len(matching('session_*', {dirs})) >= 1"
 
+      # "/" is rejected outright - it's the mountpoint itself, not a file or
+      # a glob (see tools/mass_storage/files.py) - and a top-level glob like
+      # "/*" would only return the matched session directories themselves,
+      # not the CSV inside them, since copy_from's returned paths are exactly
+      # what matched. Naming the file directly is what makes the validation
+      # below - which checks by filename, not by directory - possible.
       - !DutStorage:
         name: "Copy The Heart Rate Log Off The Card"
         action: copy_from
-        path: "/"
+        path: "/session_*/tekpadz_hr.csv"
         dest: "../results"
         validation: "len(matching('*tekpadz_hr.csv', {copied})) >= 1"
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
 
       - !DutStorage:
         name: "Give The Card Back"
