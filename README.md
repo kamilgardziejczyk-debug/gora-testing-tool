@@ -410,6 +410,48 @@ rebuild + redeploy, not a file copy; `firmware/` and `results/` are
 bind-mounted from `~/gora-testing-tool/` on each node (created
 automatically) and are not touched by rebuilds.
 
+#### Running a one-shot scenario against an already-deployed node
+
+A node normally sits with `gora-node` running long-lived, in runner mode,
+waiting for a workflow job (see above). To run a scenario against its
+hardware right now, without going through a workflow dispatch, start a
+second, ordinary one-shot container over SSH — it shares the same image and
+the same bind-mounted `firmware/`/`results/`, and doesn't touch `gora-node`:
+
+```bash
+ssh rpi1@192.168.1.42 \
+  "docker run -d --name gora-usb-stress \
+     --privileged \
+     -v /dev:/dev \
+     -e TZ=Europe/Warsaw \
+     -v /home/rpi1/gora-testing-tool/firmware:/app/firmware:ro \
+     -v /home/rpi1/gora-testing-tool/results:/app/results \
+     gora-testing-tool:<tag> \
+     -t scenarios/tracker_usb_cycle.yml -f /app/firmware"
+```
+
+*   Safe to run alongside an idle `gora-node`: the runner only touches the
+    DUT/hub while a job is actually executing, not while it's waiting for
+    one — two containers can both see `/dev` without conflict as long as
+    only one of them is mid-scenario at a time.
+*   Use `docker images` on the node to see which `<tag>`s are already
+    loaded (see "Pulling results back from a node" above for how a tag maps
+    to a commit).
+*   **If the scenario was added after the loaded image's commit**, check
+    what that commit touched (`git show --stat <commit>`) before assuming a
+    rebuild is needed. A scenario-only change (a new/edited `.yml`, no
+    `main.py` or command-parser changes) can run against an older image by
+    bind-mounting the file over the baked-in one instead of rebuilding:
+    add `-v /path/to/scenarios/tracker_usb_cycle.yml:/app/scenarios/tracker_usb_cycle.yml:ro`
+    to the command above. A scenario that needs a command type or option the
+    loaded image doesn't have yet still needs the full rebuild + redeploy.
+*   Flags needed follow the same rules as everywhere else in this doc —
+    `--privileged -v /dev:/dev` here because `tracker_usb_cycle.yml` uses
+    `!DutStorage` (see "Running `!DutStorage` scenarios in Docker" above).
+*   `docker logs -f gora-usb-stress` to watch it, `docker wait
+    gora-usb-stress` to block until it exits, `docker rm gora-usb-stress`
+    once done (it isn't `--rm` here so logs survive a crash for inspection).
+
 ##### Troubleshooting runner registration
 
 If a node comes up but the runner never appears under the repo's
@@ -619,6 +661,27 @@ python main.py -t scenarios/power_hold.yml
 Switches the storage USB port and the DUT's relay on and holds them for an hour, for charging a
 flat battery or working on the board by hand. Stop it early with Ctrl-C (or
 `docker kill --signal=SIGINT`); the run's cleanup then releases the relay.
+
+#### 5. Stress-testing power-loss recovery (`power_cycle_stress.yml`):
+```bash
+python main.py -t scenarios/power_cycle_stress.yml -f firmware
+```
+Twenty cycles of recording on battery, then cutting relay power outright — no unmount, no
+warning — and restoring it. Each cycle only checks that the board reboots at all; the real
+verdict is `device.log` afterwards (no `assert failed`, no `Boot reset reason: PANIC` outside a
+clean power-on reset) plus the final card mount succeeding, which proves the FAT survived every
+cut without needing an external `fsck`.
+
+#### 6. Stress-testing BLE reconnects (`ble_hrv_reconnect_stress.yml`):
+```bash
+python main.py -t scenarios/ble_hrv_reconnect_stress.yml -f firmware
+```
+Fifteen cycles of dropping the simulated heart-rate sensor off the air and back
+(`!BleHrvSimSet`'s `bounce` action) while the tracker records, so it has to scan, connect,
+discover and subscribe again from nothing each time. PREREQUISITE, same as `tracker_hrv.yml`:
+the card must already carry a `configuration.json` whose `ble.hr_sensor_name` is exactly
+`"GoraHRV_01"`. Every check in the loop verdict comes from the DUT's own console, scoped
+`since: command` so a stale line from an earlier reconnect can't pass a later one.
 
 ---
 

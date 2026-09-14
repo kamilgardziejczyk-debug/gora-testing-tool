@@ -1,0 +1,205 @@
+---
+# Stress-tests the tracker's BLE reconnect path against its heart rate sensor.
+#
+#   python3 main.py -t scenarios/ble_hrv_reconnect_stress.yml -f firmware
+#
+# A sensor going out of range, a strap losing contact hard enough to drop the
+# link, or the sensor's own reboot all look the same to the tracker: the
+# peripheral falls off the air and has to be found, connected to and
+# subscribed to again from nothing. !BleHrvSimSet's `bounce` action is built
+# for exactly this - it drops the simulated sensor and brings it back,
+# forcing a real reconnect rather than a resumed one. One bounce exercises
+# one reconnect; this runs fifteen.
+#
+# PREREQUISITE, same as tracker_hrv.yml: the card must already carry a
+# configuration.json whose ble.hr_sensor_name is exactly "GoraHRV_01".
+#
+# Each cycle bounces the sensor, then waits on the tracker's own console for
+# the same three-line sequence a fresh boot goes through: it finds the
+# sensor, discovers the Heart Rate characteristic, and logs a measurement.
+# Every check in the loop is since: command, deliberately - the tracker
+# printed all three lines on the very first connect too, so the default
+# whole-run scope would let cycle two pass against cycle one's lines without
+# the tracker having reconnected at all.
+name: "Tekpadz HRV Reconnect Stress"
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+usb_hub:
+  ports:
+    dut_storage: 3
+
+groups:
+  - !Group
+    name: "Put The Sensor On The Air And Boot The Tracker"
+    commands:
+      # First, so the sensor is already advertising when the tracker's BLE
+      # starts - nothing is streamed until it subscribes, so being early
+      # costs nothing.
+      - !BleHrvSimStart:
+        name: "Advertise A Heart Rate Sensor"
+        session: hrv
+        device: "GoraHRV_01"
+        bpm: 60
+        jitter_ms: 25
+        interval_s: 1
+        seed: 1
+
+      - !UsbSwitch
+        name: "Connect Storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn On The Tracker"
+        relay: 1
+        state: 1
+        wait_after_s: 1
+
+      - !DutLogExpect:
+        name: "Tracker Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        timeout_s: 60
+
+  - !Group
+    name: "Confirm The Tracker Is Configured For This Sensor"
+    commands:
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+
+      - !DutStorage:
+        name: "Card Names The Sensor This Scenario Advertises"
+        action: read
+        path: "/configuration.json"
+        validation: '"GoraHRV_01" in {content}'
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
+
+      # Returning the card is what lets the tracker get back to recording,
+      # and only then does it start BLE at all - see tracker_hrv.yml for why.
+      - !DutStorage:
+        name: "Give The Card Back To The Tracker"
+        port: dut_storage
+        action: eject
+
+      - !UsbSwitch
+        name: "Disconnect Storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+  - !Group
+    name: "First Connect"
+    commands:
+      - !DutLogExpect:
+        name: "Tracker Finds The Sensor"
+        validation: 'matches({line}, r"Matching HR sensor found! Name: GoraHRV_01")'
+        timeout_s: 60
+
+      - !DutLogExpect:
+        name: "Tracker Discovers The Heart Rate Service"
+        validation: 'matches({line}, r"Found HR Characteristic")'
+        timeout_s: 30
+
+      - !DutLogExpect:
+        name: "Tracker Logs A Measurement"
+        validation: 'matches({line}, r"HR: \d+ bpm")'
+        timeout_s: 60
+
+  - !Group
+    name: "Bounce The Sensor Repeatedly"
+    commands:
+      - !Loop
+        name: "Drop The Link, Then Verify The Tracker Reconnects"
+        iterations: 15
+        commands:
+          - !BleHrvSimSet:
+            name: "Drop Off The Air And Come Back"
+            session: hrv
+            actions:
+              - bounce
+
+          - !DutLogExpect:
+            name: "Tracker Finds The Sensor Again"
+            validation: 'matches({line}, r"Matching HR sensor found! Name: GoraHRV_01")'
+            since: command
+            timeout_s: 60
+
+          - !DutLogExpect:
+            name: "Tracker Rediscovers The Heart Rate Service"
+            validation: 'matches({line}, r"Found HR Characteristic")'
+            since: command
+            timeout_s: 30
+
+          - !DutLogExpect:
+            name: "Tracker Resumes Logging Measurements"
+            validation: 'matches({line}, r"HR: \d+ bpm")'
+            since: command
+            timeout_s: 60
+
+  - !Group
+    name: "Stop And Check What Was Recorded"
+    commands:
+      # Read before the sensor stops: {subscribed} is false the moment it
+      # leaves the air. >= 10 is a floor, not a target - each of the fifteen
+      # bounces only has to produce one measurement to satisfy its own loop
+      # check, so the actual count depends on how long each reconnect took.
+      - !BleHrvSimStop:
+        name: "Stop The Sensor"
+        session: hrv
+        validation: "{subscribed} and {rr_intervals} >= 10"
+
+      - !UsbSwitch
+        name: "Connect Storage USB"
+        port: dut_storage
+        state: 1
+
+      - !DutLogExpect:
+        name: "Tracker Hands The Card Back To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        since: command
+        timeout_s: 60
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+
+      - !DutStorage:
+        name: "Card Holds A Heart Rate Log"
+        action: list
+        path: "/"
+        validation: "len(matching('session_*', {dirs})) >= 1"
+
+      - !DutStorage:
+        name: "Copy The Heart Rate Log Off The Card"
+        action: copy_from
+        path: "/"
+        dest: "../results"
+        validation: "len(matching('*tekpadz_hr.csv', {copied})) >= 1"
+
+      - !DutStorage:
+        name: "Give The Card Back"
+        port: dut_storage
+        action: eject
+
+  - !Group
+    name: "Teardown"
+    commands:
+      - !UsbSwitch
+        name: "Disconnect storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn off the device"
+        relay: 1
+        state: 0

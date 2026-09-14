@@ -190,8 +190,8 @@ groups:
         timeout_s: 300
 
       - !Loop
-        name: "Record For Two Hours"
-        iterations: 24
+        name: "Record For Three Hours"
+        iterations: 36
         commands:
           - !DutLogExpect:
             name: "Tracker Still Sampling"

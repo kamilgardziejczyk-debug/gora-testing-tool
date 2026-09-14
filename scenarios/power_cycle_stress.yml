@@ -1,0 +1,196 @@
+---
+# Stress-tests recovery from an abrupt loss of power.
+#
+#   python3 main.py -t scenarios/power_cycle_stress.yml -f firmware
+#
+# Pulling power on a recording device is not a graceful shutdown - the card
+# can be mid-write, the FAT allocation table half-updated. A brownout, a
+# loose connector or a drained battery all look like this to the firmware.
+# One power cycle exercises one cut; this runs twenty, each timed to land
+# while a write is actually in flight rather than during idle boot.
+#
+# Every cycle waits on battery (USB storage stays disconnected throughout the
+# loop, so the tracker is recording to its own card) for twenty seconds -
+# long enough for the ADC stream to be well underway, the same reasoning
+# tracker_usb_cycle.yml uses for its own wait - then cuts relay power
+# outright, holds it off, and restores it.
+#
+# The verdict has two parts. This scenario only checks that each boot reaches
+# its version banner, which proves the board is not bricked, not that
+# nothing was damaged - a firmware that reboots straight into a panic loop
+# and then recovers would still print it. The real check is device.log
+# afterwards: no "assert failed", no "Boot reset reason: PANIC" outside a
+# clean power-on reset. The final mount below is the other half - it proves
+# the FAT survived every cut without needing an external fsck, since a
+# corrupted table fails the mount outright rather than quietly.
+name: "Tekpadz Power Cycle Stress"
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+usb_hub:
+  ports:
+    dut_storage: 3
+
+groups:
+  - !Group
+    name: "Initialization"
+    commands:
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn on the device"
+        relay: 1
+        state: 1
+        wait_after_s: 1
+
+  - !Group
+    name: "Flashing"
+    commands:
+      - !DutLogControl
+        name: "Release The Console For Flashing"
+        state: 0
+
+      # Addresses follow flash_files in the build's flasher_args.json.
+      - !ProgramEsptool:
+        name: "Flash The Tracker"
+        bootloader: "bootloader.bin"
+        bootloader_address: 0x0
+        partition_table: "partition-table.bin"
+        partition_table_address: 0x8000
+        ota_data: "ota_data_initial.bin"
+        ota_data_address: 0x10000
+        firmware: "tekpadz.bin"
+        address: 0x20000
+        port: "/dev/ttyUSB0"
+        timeout_s: 30
+
+  - !Group
+    name: "Clear The Card"
+    commands:
+      - !DutLogControl
+        name: "Capture The Console Again"
+        state: 1
+        wait_after_s: 1
+
+      - !DutLogExpect:
+        name: "Device Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        timeout_s: 30
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+        mode: rw
+
+      - !DutStorage:
+        name: "Clear The Session Directories"
+        action: delete
+        path: "/session_*"
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
+
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
+
+      - !UsbSwitch
+        name: "Disconnect storage USB - the tracker starts recording"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+  - !Group
+    name: "Cut Power Repeatedly"
+    commands:
+      - !Loop
+        name: "Record, Then Pull Power"
+        iterations: 20
+        commands:
+          - !ExecuteCommand:
+            name: "Let The Card Write Catch Up To The Stream"
+            command: "sleep 20"
+
+          - !RelayControl
+            name: "Cut Power Abruptly - No Unmount, No Warning"
+            relay: 1
+            state: 0
+            wait_after_s: 3
+
+          - !RelayControl
+            name: "Restore Power"
+            relay: 1
+            state: 1
+
+          - !DutLogExpect:
+            name: "Board Is Not Bricked"
+            validation: 'matches({line}, "App version:")'
+            since: command
+            timeout_s: 15
+
+  - !Group
+    name: "Confirm The Card Still Mounts Cleanly"
+    commands:
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      # since: group, not the default scenario scope or the tighter command
+      # scope - this exact line also appeared once already, in "Clear The
+      # Card" above, before any of the twenty cuts, so the whole-run scope
+      # would match that old line and pass without this reconnect having
+      # happened at all. command is too tight the other way: the hand-off
+      # measured under 1.5s in practice, so it can complete during the
+      # "Connect storage USB" command's own wait_after_s, before this check
+      # even starts - group is the one scope that still sees a line that
+      # arrived while the previous command was finishing.
+      - !DutLogExpect:
+        name: "Device Hands The Card To The Host Again"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        since: group
+        timeout_s: 30
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+        mode: rw
+
+      - !DutStorage:
+        name: "Clear What Twenty Cycles Recorded"
+        action: delete
+        path: "/session_*"
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
+
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
+
+  - !Group
+    name: "Teardown"
+    commands:
+      - !UsbSwitch
+        name: "Disconnect storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn off the device"
+        relay: 1
+        state: 0
