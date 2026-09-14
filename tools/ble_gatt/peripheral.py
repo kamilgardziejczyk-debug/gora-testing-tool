@@ -28,6 +28,8 @@ LOGGER = logging.getLogger(__name__)
 
 BLUEZ_SERVICE = "org.bluez"
 GATT_MANAGER_INTERFACE = "org.bluez.GattManager1"
+DEVICE_INTERFACE = "org.bluez.Device1"
+OBJECT_MANAGER_INTERFACE = "org.freedesktop.DBus.ObjectManager"
 
 DEFAULT_ADAPTER = "hci0"
 DEFAULT_TIMEOUT_S = 15.0
@@ -403,11 +405,27 @@ class BlePeripheral:
         )
 
     def stop(self) -> None:
-        """Stop advertising and unregister, keeping this peripheral restartable."""
+        """Disconnect any connected central, stop advertising, and unregister.
+
+        Removing the advertisement and the GATT application, on their own,
+        leave an already-connected central's link untouched - BlueZ tracks a
+        connection independently of both, so a central mid-connection when
+        this is called would otherwise still believe it holds a live link
+        after `start()` brings the peripheral back. `bounce()` (stop() then
+        start()) depends on this to force a real reconnect rather than
+        leaving a central that never notices anything happened.
+        """
         if not self._started:
             return
 
         self._started = False
+        try:
+            self._loop.run(self._disconnect_connected_centrals(), self.timeout_s)
+        except (DBusError, TimeoutError, OSError) as error:
+            LOGGER.warning(
+                "Could not disconnect the central connected to '%s': %s", self.local_name, error
+            )
+
         try:
             self._stop_advertising()
         except (MgmtError, OSError) as error:
@@ -469,6 +487,37 @@ class BlePeripheral:
     def clear_writes(self, char_uuid: str) -> None:
         """Forget writes recorded so far, so a later assertion starts clean."""
         self._characteristic(char_uuid).writes.clear()
+
+    async def _disconnect_connected_centrals(self) -> None:
+        """Disconnect every central BlueZ shows as connected on this adapter.
+
+        BlueZ, not this process, owns the connection - there is no local
+        state to consult, so this asks the bus directly via
+        `org.freedesktop.DBus.ObjectManager` (on `/`, the root BlueZ
+        exports every object under) rather than tracking connections here
+        as they happen. Filtered to this adapter, in case more than one is
+        present on the host.
+        """
+        if self._bus is None:
+            return
+
+        introspection = await self._bus.introspect(BLUEZ_SERVICE, "/")
+        root = self._bus.get_proxy_object(BLUEZ_SERVICE, "/", introspection)
+        object_manager = root.get_interface(OBJECT_MANAGER_INTERFACE)
+        objects = await object_manager.call_get_managed_objects()
+
+        adapter_path = f"/org/bluez/{self.adapter}"
+        for path, interfaces in objects.items():
+            device = interfaces.get(DEVICE_INTERFACE)
+            if device is None:
+                continue
+            if device["Adapter"].value != adapter_path or not device["Connected"].value:
+                continue
+
+            device_introspection = await self._bus.introspect(BLUEZ_SERVICE, path)
+            device_proxy = self._bus.get_proxy_object(BLUEZ_SERVICE, path, device_introspection)
+            await device_proxy.get_interface(DEVICE_INTERFACE).call_disconnect()
+            LOGGER.info("Disconnected central %s from '%s'", path, self.local_name)
 
     async def _register_application(self) -> None:
         """Export every object and hand the GATT application to BlueZ."""
