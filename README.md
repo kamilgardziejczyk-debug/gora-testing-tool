@@ -603,6 +603,15 @@ The scenario only hands the card to the host and holds it there for three minute
 because fsck needs the device to itself. It then ejects the card and leaves USB power and the
 DUT on, since the same port charges the board.
 
+#### 3. Stress-testing recording stops (`tracker_usb_cycle.yml`):
+```bash
+python main.py -t scenarios/tracker_usb_cycle.yml -f firmware
+```
+Thirty cycles of recording on battery, then connecting USB, which stops the recording.
+A crash at the stop usually reboots straight into storage mode and passes every check,
+so read the verdict from `device.log`: no `assert failed`, no
+`Boot reset reason: PANIC`, and one `APP_RECORDING -> APP_WAIT_SD_UNMOUNT` per cycle.
+
 ---
 
 ## 3. Supported Scenario Tags

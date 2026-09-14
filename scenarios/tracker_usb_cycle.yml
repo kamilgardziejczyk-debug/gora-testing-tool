@@ -1,0 +1,172 @@
+---
+# Stress-tests the moment a recording stops.
+#
+#   python3 main.py -t scenarios/tracker_usb_cycle.yml -f firmware
+#
+# Connecting USB ends a recording: the tracker stops its ADC stream while the
+# stream reader, on the other core, is usually in the middle of a scan. Before
+# the SPI lock in the mcp346xr driver those two collided and the firmware
+# asserted in spi_device_transmit, about one stop in three. One tracker run
+# exercises one stop, so this runs thirty.
+#
+# Each cycle records on battery, connects USB (the stop under test), then ejects
+# the card - which waits for it to enumerate, so it also proves the tracker got
+# to storage mode - and disconnects USB so recording starts again.
+#
+# A crash at the stop usually recovers by itself: the board reboots straight
+# into storage mode and every check below still passes. The verdict is in
+# device.log instead - no "assert failed", no "Boot reset reason: PANIC", and
+# one "APP_RECORDING -> APP_WAIT_SD_UNMOUNT" per cycle.
+name: "Tekpadz Recording Stop Stress"
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+usb_hub:
+  ports:
+    dut_storage: 3
+
+groups:
+  - !Group
+    name: "Initialization"
+    commands:
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn on the device"
+        relay: 1
+        state: 1
+        wait_after_s: 1
+
+  - !Group
+    name: "Flashing"
+    commands:
+      - !DutLogControl
+        name: "Release The Console For Flashing"
+        state: 0
+
+      # Addresses follow flash_files in the build's flasher_args.json.
+      - !ProgramEsptool:
+        name: "Flash The Tracker"
+        bootloader: "bootloader.bin"
+        bootloader_address: 0x0
+        partition_table: "partition-table.bin"
+        partition_table_address: 0x8000
+        ota_data: "ota_data_initial.bin"
+        ota_data_address: 0x10000
+        firmware: "tekpadz.bin"
+        address: 0x20000
+        port: "/dev/ttyUSB0"
+        timeout_s: 30
+
+  - !Group
+    name: "Clear The Card"
+    commands:
+      - !DutLogControl
+        name: "Capture The Console Again"
+        state: 1
+        wait_after_s: 1
+
+      - !DutLogExpect:
+        name: "Device Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        timeout_s: 30
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+        mode: rw
+
+      - !DutStorage:
+        name: "Clear The Session Directories"
+        action: delete
+        path: "/session_*"
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
+
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
+
+  # Twenty seconds of recording is well past the ADC stream coming up, so every
+  # stop lands on a live reader - the case that raced.
+  - !Group
+    name: "Stop The Recording Repeatedly"
+    commands:
+      - !Loop
+        name: "Record, Then Connect USB"
+        iterations: 30
+        commands:
+          - !UsbSwitch
+            name: "Disconnect USB - The Tracker Records"
+            port: dut_storage
+            state: 0
+            wait_after_s: 20
+
+          - !UsbSwitch
+            name: "Connect USB - The Recording Stops"
+            port: dut_storage
+            state: 1
+
+          - !DutStorage:
+            name: "Eject The Card"
+            port: dut_storage
+            action: eject
+
+  # Every cycle opened a session directory; take them off the card again.
+  - !Group
+    name: "Clear The Card Again"
+    commands:
+      - !UsbSwitch
+        name: "Disconnect USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 20
+
+      - !UsbSwitch
+        name: "Connect USB"
+        port: dut_storage
+        state: 1
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+        mode: rw
+
+      - !DutStorage:
+        name: "Clear The Session Directories"
+        action: delete
+        path: "/session_*"
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
+
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
+
+  - !Group
+    name: "Teardown"
+    commands:
+      - !UsbSwitch
+        name: "Disconnect storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn off the device"
+        relay: 1
+        state: 0
