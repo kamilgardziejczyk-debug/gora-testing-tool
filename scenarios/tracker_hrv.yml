@@ -238,23 +238,24 @@ groups:
         session: hrv
         validation: "{subscribed} and {notifications} >= 60 and {rr_intervals} >= 60"
 
-      # No wait_after_s, deliberately: the check below is scoped to this
-      # command onwards, so any pause here is a window in which the line it is
-      # waiting for could arrive and be missed. The firmware has to notice
-      # VBUS, unmount and re-present the card, which takes far longer than the
-      # milliseconds this leaves - but a second of slack would not be safe.
       - !UsbSwitch
         name: "Connect Storage USB"
         port: dut_storage
         state: 1
 
-      # since: command, unlike the identical check at boot: the card has been
-      # handed over once already this run, so the whole-run scope would match
-      # that first handover and let the mount below race the enumeration.
+      # since: group, not command or the whole-run default: the card has
+      # been handed over once already this run, so the whole-run scope would
+      # match that first handover and let the mount below race the
+      # enumeration. command is too tight the other way - the hand-off has
+      # measured well under the UsbSwitch command's own execution time in
+      # practice, so it can complete (and log this line) before this command
+      # even starts. group is the one scope that still sees a line that
+      # arrived while the previous command was finishing, without reaching
+      # back far enough to match the boot-time hand-off.
       - !DutLogExpect:
         name: "Tracker Hands The Card Back To The Host"
         validation: 'matches({line}, "USB Storage is now ACTIVE")'
-        since: command
+        since: group
         timeout_s: 60
 
       - !DutStorage:
