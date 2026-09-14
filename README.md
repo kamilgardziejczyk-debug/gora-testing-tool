@@ -612,6 +612,14 @@ A crash at the stop usually reboots straight into storage mode and passes every 
 so read the verdict from `device.log`: no `assert failed`, no
 `Boot reset reason: PANIC`, and one `APP_RECORDING -> APP_WAIT_SD_UNMOUNT` per cycle.
 
+#### 4. Holding the DUT powered (`power_hold.yml`):
+```bash
+python main.py -t scenarios/power_hold.yml
+```
+Switches the storage USB port and the DUT's relay on and holds them for an hour, for charging a
+flat battery or working on the board by hand. Stop it early with Ctrl-C (or
+`docker kill --signal=SIGINT`); the run's cleanup then releases the relay.
+
 ---
 
 ## 3. Supported Scenario Tags
