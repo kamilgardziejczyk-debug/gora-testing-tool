@@ -126,18 +126,15 @@ groups:
             actions:
               - bounce
 
-          - !DutLogExpect:
-            name: "Tracker Finds The Sensor Again"
-            validation: 'matches({line}, r"Matching HR sensor found! Name: GoraHRV_01")'
-            since: command
-            timeout_s: 60
-
-          - !DutLogExpect:
-            name: "Tracker Rediscovers The Heart Rate Service"
-            validation: 'matches({line}, r"Found HR Characteristic")'
-            since: command
-            timeout_s: 30
-
+          # Not "Tracker Finds The Sensor Again" / "...Rediscovers The Heart
+          # Rate Service" here, deliberately - those are one-shot lines, and
+          # bounce blocks for a couple of seconds disconnecting the central
+          # before it returns, which is easily enough time for a fast
+          # reconnect to complete - and log its one-shot lines - before this
+          # command even starts, so since: command loses the race on them
+          # unpredictably. Measurements repeat every second once resubscribed
+          # though, so this alone still proves the whole cycle (found,
+          # discovered, resubscribed) happened, without caring exactly when.
           - !DutLogExpect:
             name: "Tracker Resumes Logging Measurements"
             validation: 'matches({line}, r"HR: \d+ bpm")'
@@ -161,10 +158,17 @@ groups:
         port: dut_storage
         state: 1
 
+      # since: group, not command: the hand-off measured well under the
+      # "Connect Storage USB" command's own couple of seconds of internal
+      # retry-until-powered-on polling in practice, so the line can already
+      # be captured before this command even starts - command would lose
+      # that race. group is safe because nothing in this group has said
+      # "USB Storage is now ACTIVE" yet - the first hand-off, at boot, was
+      # in an earlier group entirely.
       - !DutLogExpect:
         name: "Tracker Hands The Card Back To The Host"
         validation: 'matches({line}, "USB Storage is now ACTIVE")'
-        since: command
+        since: group
         timeout_s: 60
 
       - !DutStorage:
@@ -178,12 +182,22 @@ groups:
         path: "/"
         validation: "len(matching('session_*', {dirs})) >= 1"
 
+      # "/" is rejected outright - it's the mountpoint itself, not a file or
+      # a glob (see tools/mass_storage/files.py) - and a top-level glob like
+      # "/*" would only return the matched session directories themselves,
+      # not the CSV inside them, since copy_from's returned paths are exactly
+      # what matched. Naming the file directly is what makes the validation
+      # below - which checks by filename, not by directory - possible.
       - !DutStorage:
         name: "Copy The Heart Rate Log Off The Card"
         action: copy_from
-        path: "/"
+        path: "/session_*/tekpadz_hr.csv"
         dest: "../results"
         validation: "len(matching('*tekpadz_hr.csv', {copied})) >= 1"
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
 
       - !DutStorage:
         name: "Give The Card Back"
