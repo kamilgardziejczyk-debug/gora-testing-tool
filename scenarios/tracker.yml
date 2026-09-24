@@ -174,6 +174,13 @@ groups:
         state: 1
         wait_after_s: 1
 
+      # GNSS hw init runs on every boot (tekpadz_gnss_task.c), regardless of
+      # tracker vs console mode, so this boot's log always carries it.
+      - !DutLogExpect:
+        name: "GNSS RF LNA Mode Confirmed Normal"
+        validation: 'matches({line}, r"RF LNA mode: 0 \(0=normal, 1=lowgain, 2=bypass\)")'
+        timeout_s: 15
+
       - !DutLogExpect:
         name: "Tracker Finds The Sensor"
         validation: 'matches({line}, r"Matching HR sensor found! Name: GoraHRV_01")'
