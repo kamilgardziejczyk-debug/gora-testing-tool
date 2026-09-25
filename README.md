@@ -683,6 +683,16 @@ the card must already carry a `configuration.json` whose `ble.hr_sensor_name` is
 `"GoraHRV_01"`. Every check in the loop verdict comes from the DUT's own console, scoped
 `since: command` so a stale line from an earlier reconnect can't pass a later one.
 
+#### 7. Calibration state (`calibration.yml`):
+```bash
+python main.py -t scenarios/calibration.yml -f firmware
+```
+Flashes the tracker, lets it record, then types `app calibrate start` with
+[`!DutLogSend`](#dutlogsend). Checks that `pot` is refused while recording, that the tracker
+goes `APP_RECORDING -> APP_WAIT_SD_UNMOUNT -> APP_CALIBRATION`, that `pot` and `adc` then work,
+and that `app calibrate stop` restarts it into recording. Every check reads the DUT's console,
+scoped `since: group`. Not yet run on the bench.
+
 ---
 
 ## 3. Supported Scenario Tags

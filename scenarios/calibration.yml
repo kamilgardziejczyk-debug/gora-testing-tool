@@ -1,0 +1,234 @@
+---
+# Exercises the tracker's calibration state over its console.
+#
+#   python3 main.py -t scenarios/calibration.yml -f firmware
+#
+# Calibration is entered by typing `app calibrate start` while recording: the
+# tracker stops recording, unmounts the card and waits for a restart. In that
+# state the hardware commands (`adc`, `pot`) are allowed; while recording the
+# console guard refuses them. The scenario checks both sides of that, then
+# leaves with `app calibrate stop` and checks the tracker restarts into
+# recording.
+#
+# The console is also the programming port, so it is handed over around the
+# flash, and commands are typed on it with !DutLogSend.
+name: "Tekpadz Calibration State"
+
+dut_log:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+
+usb_hub:
+  ports:
+    dut_storage: 3
+
+groups:
+  - !Group
+    name: "Initialization"
+    commands:
+      - !UsbSwitch
+        name: "Connect storage USB"
+        port: dut_storage
+        state: 1
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn on the device"
+        relay: 1
+        state: 1
+        wait_after_s: 1
+
+  - !Group
+    name: "Flashing"
+    commands:
+      - !DutLogControl
+        name: "Release The Console For Flashing"
+        state: 0
+
+      # Addresses follow flash_files in the build's flasher_args.json.
+      - !ProgramEsptool:
+        name: "Flash The Tracker"
+        bootloader: "bootloader.bin"
+        bootloader_address: 0x0
+        partition_table: "partition-table.bin"
+        partition_table_address: 0x8000
+        ota_data: "ota_data_initial.bin"
+        ota_data_address: 0x10000
+        firmware: "tekpadz.bin"
+        address: 0x20000
+        port: "/dev/ttyUSB0"
+        timeout_s: 30
+
+  # Booting with USB connected lands in storage mode; ejecting the card and
+  # disconnecting USB sends the tracker into recording.
+  - !Group
+    name: "Start Recording"
+    commands:
+      - !DutLogControl
+        name: "Capture The Console Again"
+        state: 1
+        wait_after_s: 1
+
+      - !DutLogExpect:
+        name: "Device Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        timeout_s: 30
+
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
+
+      - !UsbSwitch
+        name: "Disconnect USB - The Tracker Records"
+        port: dut_storage
+        state: 0
+
+      - !DutLogExpect:
+        name: "Tracker Is Recording"
+        validation: 'matches({line}, "Entered recording mode")'
+        since: group
+        timeout_s: 30
+
+  - !Group
+    name: "Enter Calibration"
+    commands:
+      # The guard is what keeps a hardware command from fighting a recording.
+      - !DutLogSend
+        name: "Try pot While Recording"
+        command: "pot status"
+
+      - !DutLogExpect:
+        name: "Guard Refuses pot While Recording"
+        validation: 'matches({line}, r"CONSOLE_GUARD: pot refused")'
+        since: group
+        timeout_s: 5
+
+      - !DutLogSend
+        name: "Enter Calibration"
+        command: "app calibrate start"
+
+      - !DutLogExpect:
+        name: "Recording Stops And The Card Is Released"
+        validation: 'matches({line}, r"FSM: transition: APP_RECORDING -> APP_WAIT_SD_UNMOUNT")'
+        since: group
+        timeout_s: 10
+
+      - !DutLogExpect:
+        name: "Tracker Reaches Calibration"
+        validation: 'matches({line}, r"FSM: transition: APP_WAIT_SD_UNMOUNT -> APP_CALIBRATION")'
+        since: group
+        timeout_s: 15
+
+      - !DutLogExpect:
+        name: "Calibration Mode Announced"
+        validation: 'matches({line}, "Calibration mode: recording stopped")'
+        since: group
+        timeout_s: 5
+
+  - !Group
+    name: "Hardware Commands Allowed"
+    commands:
+      - !DutLogSend
+        name: "Read The Pots"
+        command: "pot status"
+
+      - !DutLogExpect:
+        name: "pot Answers"
+        validation: 'matches({line}, r"POT_CMD: Device 0 Status:")'
+        since: group
+        timeout_s: 5
+
+      - !DutLogSend
+        name: "Start The ADC Stream"
+        command: "adc 10"
+
+      - !DutLogExpect:
+        name: "ADC Streams"
+        validation: 'matches({line}, r"ADC stream started at 10 Hz")'
+        since: group
+        timeout_s: 5
+
+      - !DutLogSend
+        name: "Stop The ADC Stream"
+        command: "adc stop"
+
+      - !DutLogExpect:
+        name: "ADC Stops"
+        validation: 'matches({line}, "ADC stream stopped")'
+        since: group
+        timeout_s: 5
+
+  - !Group
+    name: "Leave Calibration"
+    commands:
+      - !DutLogSend
+        name: "Leave Calibration"
+        command: "app calibrate stop"
+
+      - !DutLogExpect:
+        name: "Tracker Restarts"
+        validation: 'matches({line}, "Leaving calibration, restarting")'
+        since: group
+        timeout_s: 5
+
+      - !DutLogExpect:
+        name: "Restart Is A Software Reset"
+        validation: 'matches({line}, r"Boot reset reason: SW \(")'
+        since: group
+        timeout_s: 15
+
+      - !DutLogExpect:
+        name: "Tracker Records Again"
+        validation: 'matches({line}, "Entered recording mode")'
+        since: group
+        timeout_s: 30
+
+  # Every recording opened a session directory; take them off the card again.
+  - !Group
+    name: "Clear The Card"
+    commands:
+      - !UsbSwitch
+        name: "Connect USB"
+        port: dut_storage
+        state: 1
+
+      - !DutLogExpect:
+        name: "Device Hands The Card To The Host"
+        validation: 'matches({line}, "USB Storage is now ACTIVE")'
+        since: group
+        timeout_s: 30
+
+      - !DutStorage:
+        name: "Mount The Card"
+        port: dut_storage
+        action: mount
+        mode: rw
+
+      - !DutStorage:
+        name: "Clear The Session Directories"
+        action: delete
+        path: "/session_*"
+
+      - !DutStorage:
+        name: "Unmount The Card"
+        action: unmount
+
+      - !DutStorage:
+        name: "Eject The Card"
+        port: dut_storage
+        action: eject
+
+  - !Group
+    name: "Teardown"
+    commands:
+      - !UsbSwitch
+        name: "Disconnect storage USB"
+        port: dut_storage
+        state: 0
+        wait_after_s: 1
+
+      - !RelayControl
+        name: "Turn off the device"
+        relay: 1
+        state: 0
