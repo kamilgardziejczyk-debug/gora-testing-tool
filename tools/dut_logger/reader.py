@@ -190,6 +190,27 @@ class DutLogger:
         self.session.write_marker(f"DUT LOG PORT RECLAIMED: {self.port}")
         LOGGER.info("Reclaimed DUT log port %s", self.port)
 
+    def send_line(self, text: str) -> None:
+        """Type `text` and a newline on the console the reader is capturing.
+
+        Uses the reader's own handle, so a console that is also the programming
+        port needs no second opener. Raises `ConnectionError` while capture is
+        paused or the port is down: a command sent into nothing would otherwise
+        look like a DUT that ignored it.
+        """
+        with self._state_lock:
+            console = None if self._paused else self._serial
+        if console is None:
+            raise ConnectionError(
+                f"cannot send to DUT log port {self.port}: capture is paused or the port is not open"
+            )
+        try:
+            console.write(text.encode("utf-8") + b"\n")
+            console.flush()
+        except (serial.SerialException, OSError) as error:
+            raise ConnectionError(f"could not send to DUT log port {self.port} ({error})") from error
+        self.session.write_marker(f"DUT LOG PORT SENT: {text}")
+
     def _reopen_until(self, deadline: float) -> serial.Serial:
         """Keep trying to open the console until `deadline`, or raise."""
         last_error: Exception | None = None
