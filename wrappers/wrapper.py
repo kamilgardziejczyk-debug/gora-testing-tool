@@ -93,6 +93,7 @@ class Wrapper(ABC):
     requires_dut_cli: bool = False
     captures_mqtt_log: bool = False
     controls_dut_log: bool = False
+    sends_dut_log: bool = False
     requires_usb_hub: bool = False
 
     @abstractmethod

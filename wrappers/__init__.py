@@ -14,6 +14,7 @@ from .ble_hrv_sim_set_wrapper import BleHrvSimSetWrapper
 from .ble_hrv_sim_stop_wrapper import BleHrvSimStopWrapper
 from .dut_log_expect_wrapper import DutLogExpectWrapper
 from .dut_log_control_wrapper import DutLogControlWrapper
+from .dut_log_send_wrapper import DutLogSendWrapper
 from .dut_cli_wrapper import DutCliWrapper
 from .mqtt_subscribe_wrapper import MqttSubscribeWrapper
 from .mqtt_expect_wrapper import MqttExpectWrapper

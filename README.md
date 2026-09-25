@@ -1259,6 +1259,20 @@ A failed match **fails the scenario**, logging how many lines were examined and 
 
 Matching is against the line **as the firmware emitted it**; the `[HH:MM:SS.mmm]` prefix in the log files is added by this tool and is not part of what the expression sees. A timestamp the firmware prints itself — such as the gateway's own `[2026-08-04T06:25:01,707000Z]` — *is* matchable, which makes `validation: 'matches({line}, r"^\[19[0-9]{2}-")'` a way to spot a device still running on an unsynced 1970 clock.
 
+### `!DutLogSend`
+Types one line on the DUT's console, for a board whose console is also its input — the ESP32 `tekpadz>` console shares one wire with its log output. The line goes out on the port the capture already holds, so no second opener is needed (which is also why [`!DutCli`](#dutcli), needing its own UART, does not fit). What the DUT does with it is checked with [`!DutLogExpect`](#dutlogexpect).
+
+```yaml
+  - !DutLogSend
+    name: "Enter Calibration"
+    command: "app calibrate start"
+```
+
+*   `name`: (Optional) Descriptive log name.
+*   `command`: (Required) The line to type; a newline is appended.
+
+Needs a DUT console to be captured, and is rejected at load if capture is stopped at that point (see [`!DutLogControl`](#dutlogcontrol)). A send while the port is down fails the command rather than being silently lost. Each send is marked in the combined log (`DUT LOG PORT SENT`).
+
 ### `!DutLogControl`
 Stops and starts the run's DUT console capture, for the board whose console **is** its programming port. An ESP32 behind a USB-UART bridge logs on `/dev/ttyUSB0` and is flashed on `/dev/ttyUSB0`, and both cannot read it at once: the kernel gives each byte to whichever reader asks first, so a capture left running through a flash quietly eats parts of esptool's handshake and the flash fails in ways that look random. Bracket the flash to hand the port over explicitly:
 

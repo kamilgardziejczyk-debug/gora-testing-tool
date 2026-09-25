@@ -203,7 +203,7 @@ def attach_dut_log_session(wrappers: list[Wrapper], session: LogSession | None) 
 
 
 def attach_dut_logger(wrappers: list[Wrapper], dut_logger: DutLogger | None) -> None:
-    """Give commands that suspend or resume capture the reader itself.
+    """Give commands that suspend, resume or write to the console the reader itself.
 
     Separate from `attach_dut_log_session`: reading what was captured needs the
     session, while handing the port to a programmer needs the reader holding it.
@@ -213,7 +213,7 @@ def attach_dut_logger(wrappers: list[Wrapper], dut_logger: DutLogger | None) -> 
     if dut_logger is None:
         return
     for wrapper in wrappers:
-        if wrapper.controls_dut_log:
+        if wrapper.controls_dut_log or wrapper.sends_dut_log:
             wrapper.dut_logger = dut_logger
 
 
